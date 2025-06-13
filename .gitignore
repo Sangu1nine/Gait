@@ -1,0 +1,54 @@
+# 라즈베리파이 배포용 .gitignore
+# 대용량 파일들을 제외하여 Git 전송 최적화
+
+# 대용량 학습 데이터 제외 (200MB+)
+*.npy
+scalers/gait/*.npy
+scalers/gait/stage1_data_*
+scalers/gait/stage2_data_*
+scalers/gait/stage1_labels.npy
+scalers/gait/stage2_labels.npy
+
+# 중복 메타데이터 파일 제외 (JSON 버전만 사용)
+scalers/gait/metadata.pkl
+
+# 대용량 모델 결과 파일들 제외
+models/gait_detect/results/metrics.pkl
+models/gait_detect/results/model.keras
+models/gait_detect/results/stage1_results.png
+models/gait_detect/saved_model/
+
+# Python 캐시 파일들
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# 로그 파일들
+*.log
+gait_detection.log
+
+# IDE 설정 파일들
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS 생성 파일들
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 임시 파일들
+*.tmp
+*.temp
+*.bak
+
+# 테스트 결과 파일들
+test_results/
+figs/
+
+# 개발용 노트북 파일들 (용량이 클 수 있음)
+*.ipynb_checkpoints/

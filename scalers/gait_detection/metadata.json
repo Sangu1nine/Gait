@@ -1,0 +1,63 @@
+{
+  "timestamp": "20250612_151225",
+  "n_walking_subjects": 4,
+  "n_non_walking_subjects": 32,
+  "stage1_shape": [
+    10667,
+    60,
+    6
+  ],
+  "stage2_shape": [
+    163972,
+    15,
+    6
+  ],
+  "walking_subjects": [
+    "SA02",
+    "SA03",
+    "SA04",
+    "SA01"
+  ],
+  "non_walking_subjects": [
+    "SA20",
+    "SA30",
+    "SA15",
+    "SA16",
+    "SA35",
+    "SA27",
+    "SA06",
+    "SA36",
+    "SA09",
+    "SA29",
+    "SA12",
+    "SA33",
+    "SA32",
+    "SA10",
+    "SA08",
+    "SA11",
+    "SA07",
+    "SA25",
+    "SA26",
+    "SA23",
+    "SA14",
+    "SA28",
+    "SA31",
+    "SA24",
+    "SA38",
+    "SA22",
+    "SA13",
+    "SA18",
+    "SA17",
+    "SA37",
+    "SA21",
+    "SA19"
+  ],
+  "stage1_label_distribution": {
+    "gait": 5033,
+    "non_gait": 5634
+  },
+  "total_files_processed": {
+    "walking": 317,
+    "non_walking": 664
+  }
+}
