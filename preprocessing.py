@@ -9,7 +9,7 @@ import glob
 import json
 import warnings
 
-# NumPy 1.26 호환성을 위한 설정
+# NumPy 1.23.5, Pandas 1.5.3 호환성을 위한 설정
 warnings.filterwarnings('ignore', category=FutureWarning)
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
@@ -38,7 +38,7 @@ class GaitDataPreprocessor:
         nyq = 0.5 * self.fs
         normal_cutoff = self.cutoff / nyq
         b, a = signal.butter(self.order, normal_cutoff, btype='low', analog=False)
-        # NumPy 1.26 호환성: axis 매개변수 명시적 지정
+        # SciPy 1.10.1 호환성: axis 매개변수 명시적 지정
         filtered_data = signal.filtfilt(b, a, data, axis=0)
         return filtered_data
     
@@ -64,7 +64,7 @@ class GaitDataPreprocessor:
             file_count = 0
             for csv_file in csv_files:
                 try:
-                    # 센서 데이터 로드 - 원래 방식 유지하되 robust하게 개선
+                    # 센서 데이터 로드 - Pandas 1.5.3 호환성 개선
                     try:
                         df = pd.read_csv(csv_file)
                     except Exception:
@@ -79,8 +79,8 @@ class GaitDataPreprocessor:
                         print(f"    ⚠️  {os.path.basename(csv_file)}: 센서 컬럼 누락 {missing_cols}")
                         continue
                         
-                    # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
-                    sensor_data = np.asarray(df[sensor_cols].values, dtype=np.float64)
+                    # NumPy 1.23.5 호환성: 안전한 배열 생성
+                    sensor_data = np.array(df[sensor_cols].values, dtype=np.float64)
                     
                     # 라벨 데이터 로드
                     filename = os.path.basename(csv_file).replace('.csv', '')
@@ -92,8 +92,8 @@ class GaitDataPreprocessor:
                         except Exception:
                             label_df = pd.read_csv(label_file, engine='python')
                         
-                        # 프레임별 라벨 생성 - NumPy 1.26 호환성 개선
-                        frame_labels = np.full(len(sensor_data), 'non_gait', dtype='<U50')
+                        # 프레임별 라벨 생성 - NumPy 1.23.5 호환성
+                        frame_labels = np.full(len(sensor_data), 'non_gait', dtype='U50')
                         
                         for _, row in label_df.iterrows():
                             start = int(row['start_frame']) - 1  # 0-indexed
@@ -140,7 +140,7 @@ class GaitDataPreprocessor:
             
             for csv_file in csv_files:
                 try:
-                    # 센서 데이터 로드 - 원래 방식 유지하되 robust하게 개선
+                    # 센서 데이터 로드 - Pandas 1.5.3 호환성 개선
                     try:
                         df = pd.read_csv(csv_file)
                     except Exception:
@@ -154,8 +154,8 @@ class GaitDataPreprocessor:
                         print(f"    ⚠️  {os.path.basename(csv_file)}: 센서 컬럼 누락 {missing_cols}")
                         continue
                         
-                    # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
-                    sensor_data = np.asarray(df[sensor_cols].values, dtype=np.float64)
+                    # NumPy 1.23.5 호환성: 안전한 배열 생성
+                    sensor_data = np.array(df[sensor_cols].values, dtype=np.float64)
                     
                     non_walking_data.append(sensor_data)
                     non_walking_subjects.append(f"SA{subj:02d}")
@@ -182,7 +182,7 @@ class GaitDataPreprocessor:
             if i % 100 == 0:  # 진행률 표시
                 print(f"  📊 필터링 진행률: {i+1}/{len(data_list)}")
                 
-            # NumPy 1.26 호환성: zeros_like 사용 시 dtype 명시
+            # NumPy 1.23.5 호환성: zeros_like 사용
             filtered = np.zeros_like(data, dtype=np.float64)
             for j in range(data.shape[1]):  # 각 채널별로 필터 적용
                 filtered[:, j] = self.butter_lowpass_filter(data[:, j])
@@ -199,8 +199,8 @@ class GaitDataPreprocessor:
         
         if not data_list:
             print("⚠️  윈도우 생성할 데이터가 없습니다.")
-            # NumPy 1.26 호환성: empty 배열 생성 시 dtype 명시
-            return np.empty((0, window_size, 6), dtype=np.float64), np.empty(0, dtype='<U20')
+            # NumPy 1.23.5 호환성: empty 배열 생성
+            return np.empty((0, window_size, 6), dtype=np.float64), np.empty(0, dtype='U20')
         
         for idx, data in enumerate(data_list):
             n_frames = len(data)
@@ -224,10 +224,10 @@ class GaitDataPreprocessor:
                     window_labels.append('non_gait')
                     
         if windows:
-            # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
-            return np.asarray(windows, dtype=np.float64), np.asarray(window_labels, dtype='<U20')
+            # NumPy 1.23.5 호환성: array 사용으로 안전한 배열 생성
+            return np.array(windows, dtype=np.float64), np.array(window_labels, dtype='U20')
         else:
-            return np.empty((0, window_size, 6), dtype=np.float64), np.empty(0, dtype='<U20')
+            return np.empty((0, window_size, 6), dtype=np.float64), np.empty(0, dtype='U20')
     
     def create_stage2_windows(self, data_list, labels_list, subjects_list):
         """Stage2용 윈도우 생성 (15 frames, stride 1)"""
@@ -240,8 +240,8 @@ class GaitDataPreprocessor:
         
         if not data_list:
             print("⚠️  Stage2 윈도우 생성할 데이터가 없습니다.")
-            # NumPy 1.26 호환성: empty 배열 생성 시 dtype 명시
-            return np.empty((0, window_size, 6), dtype=np.float64), [], np.empty(0, dtype='<U20')
+            # NumPy 1.23.5 호환성: empty 배열 생성
+            return np.empty((0, window_size, 6), dtype=np.float64), [], np.empty(0, dtype='U20')
         
         for idx, data in enumerate(data_list):
             n_frames = len(data)
@@ -273,15 +273,15 @@ class GaitDataPreprocessor:
                 window_labels.append(frame_labels)
                 
         if windows:
-            # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
-            return np.asarray(windows, dtype=np.float64), window_labels, np.asarray(window_subjects, dtype='<U20')
+            # NumPy 1.23.5 호환성: array 사용으로 안전한 배열 생성
+            return np.array(windows, dtype=np.float64), window_labels, np.array(window_subjects, dtype='U20')
         else:
-            return np.empty((0, window_size, 6), dtype=np.float64), [], np.empty(0, dtype='<U20')
+            return np.empty((0, window_size, 6), dtype=np.float64), [], np.empty(0, dtype='U20')
 
     def process_and_save(self):
         """전체 전처리 프로세스 실행"""
         print("=" * 60)
-        print("🚀 데이터 전처리 프로세스 시작 (NumPy 1.26 호환)")
+        print("🚀 데이터 전처리 프로세스 시작 (NumPy 1.23.5 호환)")
         print("=" * 60)
         
         # 1. 데이터 로드
@@ -313,10 +313,10 @@ class GaitDataPreprocessor:
         print(f"  🚶 Walking windows: {walking_windows_s1.shape}")
         print(f"  🏃 Non-walking windows: {non_walking_windows_s1.shape}")
         
-        # 전체 Stage1 데이터 결합 (빈 배열 처리) - 원래 방식 유지
+        # 전체 Stage1 데이터 결합 (빈 배열 처리)
         if walking_windows_s1.size > 0 and non_walking_windows_s1.size > 0:
             all_windows_s1 = np.vstack([walking_windows_s1, non_walking_windows_s1])
-            all_labels_s1 = np.hstack([walking_labels_s1, non_walking_labels_s1])
+            all_labels_s1 = np.concatenate([walking_labels_s1, non_walking_labels_s1])
         elif walking_windows_s1.size > 0:
             all_windows_s1 = walking_windows_s1
             all_labels_s1 = walking_labels_s1
@@ -328,7 +328,7 @@ class GaitDataPreprocessor:
         
         print(f"  📦 전체 Stage1 windows: {all_windows_s1.shape}")
         
-        # 4. 스케일링 (Stage1)
+        # 4. 스케일링 (Stage1) - Scikit-learn 1.3.2 호환성
         print(f"\n⚖️  Stage1 데이터 스케일링 중...")
         # Reshape for scaling
         n_samples, n_frames, n_features = all_windows_s1.shape
@@ -351,10 +351,10 @@ class GaitDataPreprocessor:
             print(f"  📦 Stage2 windows: {walking_windows_s2.shape}")
             print(f"  📦 Stage2 subjects: {walking_subjects_s2.shape}")
         else:
-            # NumPy 1.26 호환성: empty 배열 생성 시 dtype 명시
+            # NumPy 1.23.5 호환성: empty 배열 생성
             walking_windows_s2 = np.empty((0, 15, 6), dtype=np.float64)
             walking_labels_s2 = []
-            walking_subjects_s2 = np.empty(0, dtype='<U20')
+            walking_subjects_s2 = np.empty(0, dtype='U20')
             print(f"  ⚠️  Walking 데이터가 없어 Stage2 윈도우 생성 불가")
         
         # 6. 저장
@@ -363,18 +363,18 @@ class GaitDataPreprocessor:
         
         print(f"\n💾 데이터 저장 중: {save_dir}")
         
-        # Stage1 데이터 저장 - NumPy 1.26 호환성: allow_pickle 명시
-        np.save(os.path.join(save_dir, "stage1_data_minmax.npy"), all_windows_s1_minmax, allow_pickle=False)
-        np.save(os.path.join(save_dir, "stage1_data_standard.npy"), all_windows_s1_standard, allow_pickle=False)
-        np.save(os.path.join(save_dir, "stage1_labels.npy"), all_labels_s1, allow_pickle=True)
+        # Stage1 데이터 저장 - NumPy 1.23.5 호환성
+        np.save(os.path.join(save_dir, "stage1_data_minmax.npy"), all_windows_s1_minmax)
+        np.save(os.path.join(save_dir, "stage1_data_standard.npy"), all_windows_s1_standard)
+        np.save(os.path.join(save_dir, "stage1_labels.npy"), all_labels_s1)
         
         # Stage2 데이터 저장
         if walking_windows_s2.size > 0:
-            np.save(os.path.join(save_dir, "stage2_data.npy"), walking_windows_s2, allow_pickle=False)
+            np.save(os.path.join(save_dir, "stage2_data.npy"), walking_windows_s2)
             # Stage2 라벨은 리스트이므로 pickle 사용
             with open(os.path.join(save_dir, "stage2_labels.pkl"), 'wb') as f:
                 pickle.dump(walking_labels_s2, f)
-            np.save(os.path.join(save_dir, "stage2_subjects.npy"), walking_subjects_s2, allow_pickle=True)
+            np.save(os.path.join(save_dir, "stage2_subjects.npy"), walking_subjects_s2)
         
         # 스케일러 저장
         with open(os.path.join(save_dir, "minmax_scaler.pkl"), 'wb') as f:
@@ -386,6 +386,9 @@ class GaitDataPreprocessor:
         metadata = {
             'timestamp': self.timestamp,
             'numpy_version': np.__version__,
+            'pandas_version': pd.__version__,
+            'sklearn_version': '1.3.2',  # 설치된 버전
+            'scipy_version': '1.10.1',   # 설치된 버전
             'n_walking_subjects': len(set(walking_subjects)) if walking_subjects else 0,
             'n_non_walking_subjects': len(set(non_walking_subjects)) if non_walking_subjects else 0,
             'stage1_shape': list(all_windows_s1_minmax.shape),
@@ -407,7 +410,7 @@ class GaitDataPreprocessor:
             json.dump(metadata, f, indent=2)
             
         print("=" * 60)
-        print("✅ 전처리 완료! (NumPy 1.26 호환)")
+        print("✅ 전처리 완료! (NumPy 1.23.5 호환)")
         print("=" * 60)
         print(f"📊 최종 결과:")
         print(f"  📦 Stage1 데이터: {all_windows_s1_minmax.shape}")
@@ -415,6 +418,7 @@ class GaitDataPreprocessor:
         print(f"  📋 라벨 분포: {metadata['stage1_label_distribution']}")
         print(f"  💾 저장 위치: {save_dir}")
         print(f"  🔢 NumPy 버전: {np.__version__}")
+        print(f"  📊 Pandas 버전: {pd.__version__}")
         print("=" * 60)
         
         return save_dir
