@@ -33,12 +33,23 @@ source .venv/bin/activate
 
 ### 2.3 패키지 설치
 
-#### 옵션 1: 전체 패키지 (권장)
+#### 옵션 1: TFLite Runtime만 (권장 - NumPy 2.0 호환)
 ```bash
+# TensorFlow가 설치되어 있다면 먼저 제거
+pip uninstall tensorflow -y
+
+# TFLite Runtime만 설치
+pip install -r requirements_raspberry_tflite.txt
+```
+
+#### 옵션 2: 전체 TensorFlow (NumPy 1.x 필요)
+```bash
+# NumPy 다운그레이드 필요
+pip uninstall numpy -y
 pip install -r requirements_raspberry.txt
 ```
 
-#### 옵션 2: 최소 패키지 (메모리 제한 시)
+#### 옵션 3: 최소 패키지 (메모리 제한 시)
 ```bash
 pip install -r requirements_minimal.txt
 ```
@@ -58,7 +69,27 @@ python test_gait_system.py
 
 ## 4. 문제 해결
 
-### 4.1 TensorFlow/TFLite 설치 오류
+### 4.1 NumPy 2.0 호환성 문제
+**증상**: `AttributeError: _ARRAY_API not found` 또는 NumPy 호환성 경고
+
+**해결방법 1** (권장 - TFLite Runtime만 사용):
+```bash
+# TensorFlow 완전 제거
+pip uninstall tensorflow tensorflow-cpu tensorflow-gpu -y
+
+# TFLite Runtime만 설치
+pip install -r requirements_raspberry_tflite.txt
+```
+
+**해결방법 2** (NumPy 다운그레이드):
+```bash
+# NumPy 다운그레이드
+pip uninstall numpy -y
+pip install "numpy>=1.24.4,<2.0.0"
+pip install -r requirements_raspberry.txt
+```
+
+### 4.2 TensorFlow/TFLite 설치 오류
 ```bash
 # TensorFlow 설치 실패 시 TFLite Runtime만 설치
 pip uninstall tensorflow

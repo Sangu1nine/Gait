@@ -1,0 +1,27 @@
+# Gait Detection System - Raspberry Pi Requirements (TFLite Only)
+# TFLite Runtime만 사용하는 라즈베리파이 환경용 (NumPy 2.0 지원)
+
+# Core packages
+numpy>=2.0.2  # NumPy 2.0 지원
+scipy>=1.13.1
+scikit-learn>=1.6.1
+joblib>=1.5.1
+
+# TFLite Runtime only (가벼움, NumPy 2.0 호환)
+tflite-runtime>=2.10.0
+
+# Optional packages for data analysis/visualization
+pandas>=2.3.0
+matplotlib>=3.9.4
+
+# 설치 가이드:
+# 1. 가상환경 생성: python -m venv .venv
+# 2. 가상환경 활성화: source .venv/bin/activate
+# 3. TensorFlow 제거 (있는 경우): pip uninstall tensorflow -y
+# 4. 패키지 설치: pip install -r requirements_raspberry_tflite.txt
+# 
+# 장점:
+# - NumPy 2.0 호환성 문제 없음
+# - 메모리 사용량 적음
+# - 설치 간단
+# - 추론 성능 우수 
