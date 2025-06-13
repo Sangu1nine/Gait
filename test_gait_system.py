@@ -3,6 +3,9 @@
 Gait Detection System Test Script
 
 Tests if the preprocessed scalers and TFLite model work correctly.
+Uses TFLite Runtime only (NumPy 2.0 compatible).
+
+MODIFIED 2025-06-13: TFLite Runtime 전용으로 수정 (NumPy 2.0 호환성 문제 해결)
 """
 
 import os
@@ -109,40 +112,18 @@ def test_tflite_model(test_data):
     print("\n🤖 Testing TFLite model...")
     
     try:
-        # Try importing TensorFlow Lite - 라즈베리파이 환경 고려
-        tflite_available = False
-        tf_available = False
-        
-        # 1. TensorFlow 먼저 시도 (라즈베리파이에서 더 안정적)
+        # TFLite Runtime만 사용 (NumPy 2.0 호환성 문제 방지)
         try:
-            import tensorflow as tf
-            tf_available = True
-            print("✅ Using TensorFlow")
+            import tflite_runtime.interpreter as tflite
+            print("✅ Using TFLite Runtime")
         except ImportError:
-            pass
-        
-        # 2. TFLite Runtime 시도
-        if not tf_available:
-            try:
-                import tflite_runtime.interpreter as tflite
-                tf = type('tf', (), {'lite': type('lite', (), {'Interpreter': tflite.Interpreter})()})()
-                tflite_available = True
-                print("✅ Using TFLite Runtime")
-            except ImportError:
-                pass
-        
-        # 둘 다 없으면 오류
-        if not tf_available and not tflite_available:
-            print("❌ Neither TensorFlow nor TFLite Runtime is available")
+            print("❌ TFLite Runtime is not available")
+            print("   Please install: pip install tflite-runtime")
             return False
         
         # Load model
         model_path = "models/gait_detection/results/gait_detection.tflite"
-        if tf_available:
-            interpreter = tf.lite.Interpreter(model_path=model_path)
-        else:
-            interpreter = tf.lite.Interpreter(model_path=model_path)
-        
+        interpreter = tflite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         
         # Check input/output information
@@ -207,17 +188,12 @@ def test_processing_pipeline():
         data_scaled = standard_scaler.transform(data_minmax)
         data_scaled = data_scaled.reshape(60, 6)
         
-        # Step 2: TFLite inference
-        # 라즈베리파이 환경에 맞는 TensorFlow/TFLite 임포트
+        # Step 2: TFLite inference - TFLite Runtime만 사용
         try:
-            import tensorflow as tf
-            interpreter = tf.lite.Interpreter("models/gait_detection/results/gait_detection.tflite")
+            import tflite_runtime.interpreter as tflite
+            interpreter = tflite.Interpreter("models/gait_detection/results/gait_detection.tflite")
         except ImportError:
-            try:
-                import tflite_runtime.interpreter as tflite
-                interpreter = tflite.Interpreter("models/gait_detection/results/gait_detection.tflite")
-            except ImportError:
-                raise ImportError("Neither TensorFlow nor TFLite Runtime is available")
+            raise ImportError("TFLite Runtime is not available. Please install: pip install tflite-runtime")
         
         interpreter.allocate_tensors()
         
@@ -271,23 +247,15 @@ def generate_summary_report():
     except:
         print("🧠 scikit-learn: Not installed")
     
-    # 라즈베리파이 환경: TensorFlow와 TFLite Runtime 둘 다 확인
+    # TFLite Runtime만 확인 (TensorFlow 제외)
     try:
-        import tensorflow as tf
-        print(f"🤖 TensorFlow: {tf.__version__}")
-        # TFLite Runtime도 별도 확인
-        try:
-            import tflite_runtime
-            print(f"🔧 TFLite Runtime: Available (with TensorFlow)")
-        except:
-            print(f"🔧 TFLite Runtime: Not separately installed")
-    except:
-        try:
-            import tflite_runtime
-            print(f"🤖 TensorFlow: Not installed")
-            print(f"🔧 TFLite Runtime: Available (standalone)")
-        except:
-            print("🤖 TensorFlow/TFLite: Not installed")
+        import tflite_runtime
+        print(f"🤖 TFLite Runtime: Available")
+    except ImportError:
+        print("🤖 TFLite Runtime: Not installed")
+        
+    # TensorFlow는 확인하지 않음 (NumPy 2.0 호환성 문제 방지)
+    print("🚫 TensorFlow: Skipped (using TFLite Runtime only)")
     
     print("="*60)
 
