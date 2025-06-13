@@ -39,7 +39,7 @@ SENSITIVE_GYRO = 131.0     # ±250°/s
 
 # 모델 설정
 MODEL_PATH = 'models/fall_detection/fall_detection.tflite'
-SCALERS_DIR = 'scalers'
+SCALERS_DIR = 'scalers/fall_detection'
 SEQ_LENGTH = 150  # 모델 입력 shape와 일치시킴 (1.5초)
 STRIDE = 5        # 0.05초마다 예측
 SAMPLING_RATE = 100  # 센서 감지/낙상 감지 100Hz 유지
@@ -370,8 +370,6 @@ def main():
             # 디버그 출력 (5초마다)
             current_time = time.time()
             if current_time - last_print >= 5.0:
-                print(f"가속도: X={data[0]:.2f}, Y={data[1]:.2f}, Z={data[2]:.2f}")
-                print(f"자이로: X={data[3]:.2f}, Y={data[4]:.2f}, Z={data[5]:.2f}")
                 print(f"연결상태: {'✅' if data_sender.connected else '❌'}")
                 print(f"샘플링: {SAMPLING_RATE}Hz, 버퍼크기: {len(detector.buffer)}/{SEQ_LENGTH}")
                 last_print = current_time
@@ -379,12 +377,16 @@ def main():
             # 낙상 예측
             if detector.should_predict():
                 result = detector.predict()
-                if result and result['prediction'] == 1:
-                    print(f"\n🚨 낙상 감지! 신뢰도: {result['probability']:.2%}")
-                    fall_package = create_fall_package(USER_ID, result['probability'], data)
-                    data_sender.add_fall_data(fall_package)
-                    print("🚨 NAKSANG!")
-                    time.sleep(2)
+                if result:
+                    # 모든 예측에 대해 확률 출력
+                    print(f"예측 확률: {result['probability']:.4f} ({'낙상' if result['prediction'] == 1 else '정상'})")
+                    
+                    if result['prediction'] == 1:
+                        print(f"\n🚨 낙상 감지! 신뢰도: {result['probability']:.2%}")
+                        fall_package = create_fall_package(USER_ID, result['probability'], data)
+                        data_sender.add_fall_data(fall_package)
+                        print("🚨 NAKSANG!")
+                        time.sleep(2)
             
             time.sleep(1.0 / SAMPLING_RATE)
         except Exception as e:
