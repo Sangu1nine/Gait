@@ -40,11 +40,11 @@ def test_scalers():
     
     try:
         # Load scalers
-        with open("scalers/gait/minmax_scaler.pkl", 'rb') as f:
+        with open("scalers/gait_detection/minmax_scaler.pkl", 'rb') as f:
             minmax_scaler = pickle.load(f)
         print("✅ MinMaxScaler loaded successfully")
         
-        with open("scalers/gait/standard_scaler.pkl", 'rb') as f:
+        with open("scalers/gait_detection/standard_scaler.pkl", 'rb') as f:
             standard_scaler = pickle.load(f)
         print("✅ StandardScaler loaded successfully")
         
@@ -80,12 +80,12 @@ def test_metadata():
     
     try:
         # Try JSON format
-        if os.path.exists("scalers/gait/metadata.json"):
-            with open("scalers/gait/metadata.json", 'r') as f:
+        if os.path.exists("scalers/gait_detection/metadata.json"):
+            with open("scalers/gait_detection/metadata.json", 'r') as f:
                 metadata = json.load(f)
         else:
             # Try PKL format
-            with open("scalers/gait/metadata.pkl", 'rb') as f:
+            with open("scalers/gait_detection/metadata.pkl", 'rb') as f:
                 metadata = pickle.load(f)
         
         print("✅ Metadata loaded successfully")
@@ -123,7 +123,7 @@ def test_tflite_model(test_data):
                 return False
         
         # Load model
-        model_path = "models/gait_detect/results/gait_detection.tflite"
+        model_path = "models/gait_detection/results/gait_detection.tflite"
         interpreter = tf.lite.Interpreter(model_path=model_path)
         interpreter.allocate_tensors()
         
@@ -179,9 +179,9 @@ def test_processing_pipeline():
         print(f"   Gyroscope range: {gyro_data.min():.3f} ~ {gyro_data.max():.3f} deg/s")
         
         # Step 1: Scaling
-        with open("scalers/gait/minmax_scaler.pkl", 'rb') as f:
+        with open("scalers/gait_detection/minmax_scaler.pkl", 'rb') as f:
             minmax_scaler = pickle.load(f)
-        with open("scalers/gait/standard_scaler.pkl", 'rb') as f:
+        with open("scalers/gait_detection/standard_scaler.pkl", 'rb') as f:
             standard_scaler = pickle.load(f)
         
         data_reshaped = sensor_data.reshape(-1, 6)
@@ -191,7 +191,7 @@ def test_processing_pipeline():
         
         # Step 2: TFLite inference
         import tensorflow as tf
-        interpreter = tf.lite.Interpreter("models/gait_detect/results/gait_detection.tflite")
+        interpreter = tf.lite.Interpreter("models/gait_detection/results/gait_detection.tflite")
         interpreter.allocate_tensors()
         
         input_details = interpreter.get_input_details()
