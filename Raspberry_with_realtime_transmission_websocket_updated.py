@@ -367,23 +367,32 @@ def main():
             detector.add_data(data)
             imu_send_buffer.append(data)  # 100Hz로 버퍼에만 추가
             
-            # 디버그 출력 (5초마다)
+            # 디버그 출력 (10초마다)
             current_time = time.time()
-            if current_time - last_print >= 5.0:
+            if current_time - last_print >= 10.0:
                 print(f"연결상태: {'✅' if data_sender.connected else '❌'}")
-                print(f"샘플링: {SAMPLING_RATE}Hz, 버퍼크기: {len(detector.buffer)}/{SEQ_LENGTH}")
+                print(f"샘플링: {SAMPLING_RATE}Hz, 예측 간격: {STRIDE}샘플")
                 last_print = current_time
             
             # 낙상 예측
             if detector.should_predict():
                 result = detector.predict()
                 if result:
-                    # 모든 예측에 대해 확률 출력
-                    print(f"예측 확률: {result['probability']:.4f} ({'낙상' if result['prediction'] == 1 else '정상'})")
+                    # 매 stride마다 예측 확률 출력 (좌표 정보 제외)
+                    probability = result['probability']
+                    prediction_text = '낙상' if result['prediction'] == 1 else '정상'
+                    
+                    # 확률에 따른 색상 표시
+                    if probability >= 0.8:
+                        print(f"🔴 예측 확률: {probability:.4f} ({prediction_text}) - 위험")
+                    elif probability >= 0.5:
+                        print(f"🟡 예측 확률: {probability:.4f} ({prediction_text}) - 주의")
+                    else:
+                        print(f"🟢 예측 확률: {probability:.4f} ({prediction_text}) - 안전")
                     
                     if result['prediction'] == 1:
-                        print(f"\n🚨 낙상 감지! 신뢰도: {result['probability']:.2%}")
-                        fall_package = create_fall_package(USER_ID, result['probability'], data)
+                        print(f"\n🚨🚨🚨 낙상 감지! 신뢰도: {probability:.2%} 🚨🚨🚨")
+                        fall_package = create_fall_package(USER_ID, probability, data)
                         data_sender.add_fall_data(fall_package)
                         print("🚨 NAKSANG!")
                         time.sleep(2)
