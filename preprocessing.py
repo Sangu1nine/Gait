@@ -7,6 +7,11 @@ import pickle
 from datetime import datetime
 import glob
 import json
+import warnings
+
+# NumPy 1.26 호환성을 위한 설정
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 class GaitDataPreprocessor:
     def __init__(self, base_path="/content/drive/MyDrive/KFall_dataset/data/gait_data"):
@@ -33,6 +38,7 @@ class GaitDataPreprocessor:
         nyq = 0.5 * self.fs
         normal_cutoff = self.cutoff / nyq
         b, a = signal.butter(self.order, normal_cutoff, btype='low', analog=False)
+        # NumPy 1.26 호환성: axis 매개변수 명시적 지정
         filtered_data = signal.filtfilt(b, a, data, axis=0)
         return filtered_data
     
@@ -58,8 +64,13 @@ class GaitDataPreprocessor:
             file_count = 0
             for csv_file in csv_files:
                 try:
-                    # 센서 데이터 로드
-                    df = pd.read_csv(csv_file)
+                    # 센서 데이터 로드 - 원래 방식 유지하되 robust하게 개선
+                    try:
+                        df = pd.read_csv(csv_file)
+                    except Exception:
+                        # 기본 방식 실패시 python 엔진으로 재시도
+                        df = pd.read_csv(csv_file, engine='python')
+                        
                     sensor_cols = ['accel_x', 'accel_y', 'accel_z', 'gyro_x', 'gyro_y', 'gyro_z']
                     
                     # 센서 컬럼 존재 확인
@@ -68,23 +79,27 @@ class GaitDataPreprocessor:
                         print(f"    ⚠️  {os.path.basename(csv_file)}: 센서 컬럼 누락 {missing_cols}")
                         continue
                         
-                    sensor_data = df[sensor_cols].values
+                    # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
+                    sensor_data = np.asarray(df[sensor_cols].values, dtype=np.float64)
                     
                     # 라벨 데이터 로드
                     filename = os.path.basename(csv_file).replace('.csv', '')
                     label_file = os.path.join(self.base_path, f"support_label_data/SA{subj:02d}/{filename}_support_labels.csv")
                     
                     if os.path.exists(label_file):
-                        label_df = pd.read_csv(label_file)
+                        try:
+                            label_df = pd.read_csv(label_file)
+                        except Exception:
+                            label_df = pd.read_csv(label_file, engine='python')
                         
-                        # 프레임별 라벨 생성
-                        frame_labels = np.full(len(sensor_data), 'non_gait', dtype=object)
+                        # 프레임별 라벨 생성 - NumPy 1.26 호환성 개선
+                        frame_labels = np.full(len(sensor_data), 'non_gait', dtype='<U50')
                         
                         for _, row in label_df.iterrows():
                             start = int(row['start_frame']) - 1  # 0-indexed
                             end = int(row['end_frame'])
                             if start >= 0 and end <= len(sensor_data):
-                                frame_labels[start:end] = row['phase']
+                                frame_labels[start:end] = str(row['phase'])
                         
                         walking_data.append(sensor_data)
                         walking_labels.append(frame_labels)
@@ -125,7 +140,12 @@ class GaitDataPreprocessor:
             
             for csv_file in csv_files:
                 try:
-                    df = pd.read_csv(csv_file)
+                    # 센서 데이터 로드 - 원래 방식 유지하되 robust하게 개선
+                    try:
+                        df = pd.read_csv(csv_file)
+                    except Exception:
+                        df = pd.read_csv(csv_file, engine='python')
+                        
                     sensor_cols = ['accel_x', 'accel_y', 'accel_z', 'gyro_x', 'gyro_y', 'gyro_z']
                     
                     # 센서 컬럼 존재 확인
@@ -134,7 +154,8 @@ class GaitDataPreprocessor:
                         print(f"    ⚠️  {os.path.basename(csv_file)}: 센서 컬럼 누락 {missing_cols}")
                         continue
                         
-                    sensor_data = df[sensor_cols].values
+                    # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
+                    sensor_data = np.asarray(df[sensor_cols].values, dtype=np.float64)
                     
                     non_walking_data.append(sensor_data)
                     non_walking_subjects.append(f"SA{subj:02d}")
@@ -161,7 +182,8 @@ class GaitDataPreprocessor:
             if i % 100 == 0:  # 진행률 표시
                 print(f"  📊 필터링 진행률: {i+1}/{len(data_list)}")
                 
-            filtered = np.zeros_like(data)
+            # NumPy 1.26 호환성: zeros_like 사용 시 dtype 명시
+            filtered = np.zeros_like(data, dtype=np.float64)
             for j in range(data.shape[1]):  # 각 채널별로 필터 적용
                 filtered[:, j] = self.butter_lowpass_filter(data[:, j])
             filtered_data.append(filtered)
@@ -177,7 +199,8 @@ class GaitDataPreprocessor:
         
         if not data_list:
             print("⚠️  윈도우 생성할 데이터가 없습니다.")
-            return np.array([]).reshape(0, window_size, 6), np.array([])
+            # NumPy 1.26 호환성: empty 배열 생성 시 dtype 명시
+            return np.empty((0, window_size, 6), dtype=np.float64), np.empty(0, dtype='<U20')
         
         for idx, data in enumerate(data_list):
             n_frames = len(data)
@@ -201,29 +224,34 @@ class GaitDataPreprocessor:
                     window_labels.append('non_gait')
                     
         if windows:
-            return np.array(windows), np.array(window_labels)
+            # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
+            return np.asarray(windows, dtype=np.float64), np.asarray(window_labels, dtype='<U20')
         else:
-            return np.array([]).reshape(0, window_size, 6), np.array([])
+            return np.empty((0, window_size, 6), dtype=np.float64), np.empty(0, dtype='<U20')
     
-    def create_stage2_windows(self, data_list, labels_list):
+    def create_stage2_windows(self, data_list, labels_list, subjects_list):
         """Stage2용 윈도우 생성 (15 frames, stride 1)"""
         window_size = 15
         stride = 1
         
         windows = []
         window_labels = []
+        window_subjects = []
         
         if not data_list:
             print("⚠️  Stage2 윈도우 생성할 데이터가 없습니다.")
-            return np.array([]).reshape(0, window_size, 6), np.array([])
+            # NumPy 1.26 호환성: empty 배열 생성 시 dtype 명시
+            return np.empty((0, window_size, 6), dtype=np.float64), [], np.empty(0, dtype='<U20')
         
         for idx, data in enumerate(data_list):
             n_frames = len(data)
+            subject_id = subjects_list[idx]
             
             # 처음과 끝 15프레임 제외
             for start in range(15, n_frames - window_size - 14, stride):
                 end = start + window_size
                 windows.append(data[start:end])
+                window_subjects.append(subject_id)
                 
                 # 각 프레임의 라벨 (DS, SSR, SSL만)
                 frame_labels = []
@@ -245,14 +273,15 @@ class GaitDataPreprocessor:
                 window_labels.append(frame_labels)
                 
         if windows:
-            return np.array(windows), np.array(window_labels)
+            # NumPy 1.26 호환성: asarray 사용으로 안전한 배열 생성
+            return np.asarray(windows, dtype=np.float64), window_labels, np.asarray(window_subjects, dtype='<U20')
         else:
-            return np.array([]).reshape(0, window_size, 6), np.array([])
-    
+            return np.empty((0, window_size, 6), dtype=np.float64), [], np.empty(0, dtype='<U20')
+
     def process_and_save(self):
         """전체 전처리 프로세스 실행"""
         print("=" * 60)
-        print("🚀 데이터 전처리 프로세스 시작")
+        print("🚀 데이터 전처리 프로세스 시작 (NumPy 1.26 호환)")
         print("=" * 60)
         
         # 1. 데이터 로드
@@ -284,7 +313,7 @@ class GaitDataPreprocessor:
         print(f"  🚶 Walking windows: {walking_windows_s1.shape}")
         print(f"  🏃 Non-walking windows: {non_walking_windows_s1.shape}")
         
-        # 전체 Stage1 데이터 결합 (빈 배열 처리)
+        # 전체 Stage1 데이터 결합 (빈 배열 처리) - 원래 방식 유지
         if walking_windows_s1.size > 0 and non_walking_windows_s1.size > 0:
             all_windows_s1 = np.vstack([walking_windows_s1, non_walking_windows_s1])
             all_labels_s1 = np.hstack([walking_labels_s1, non_walking_labels_s1])
@@ -318,11 +347,14 @@ class GaitDataPreprocessor:
         # 5. Stage2 데이터 생성 (walking data만)
         print(f"\n📦 Stage2 윈도우 생성 중...")
         if walking_data:
-            walking_windows_s2, walking_labels_s2 = self.create_stage2_windows(walking_data, walking_labels)
+            walking_windows_s2, walking_labels_s2, walking_subjects_s2 = self.create_stage2_windows(walking_data, walking_labels, walking_subjects)
             print(f"  📦 Stage2 windows: {walking_windows_s2.shape}")
+            print(f"  📦 Stage2 subjects: {walking_subjects_s2.shape}")
         else:
-            walking_windows_s2 = np.array([]).reshape(0, 15, 6)
-            walking_labels_s2 = np.array([])
+            # NumPy 1.26 호환성: empty 배열 생성 시 dtype 명시
+            walking_windows_s2 = np.empty((0, 15, 6), dtype=np.float64)
+            walking_labels_s2 = []
+            walking_subjects_s2 = np.empty(0, dtype='<U20')
             print(f"  ⚠️  Walking 데이터가 없어 Stage2 윈도우 생성 불가")
         
         # 6. 저장
@@ -331,15 +363,18 @@ class GaitDataPreprocessor:
         
         print(f"\n💾 데이터 저장 중: {save_dir}")
         
-        # Stage1 데이터 저장
-        np.save(os.path.join(save_dir, "stage1_data_minmax.npy"), all_windows_s1_minmax)
-        np.save(os.path.join(save_dir, "stage1_data_standard.npy"), all_windows_s1_standard)
-        np.save(os.path.join(save_dir, "stage1_labels.npy"), all_labels_s1)
+        # Stage1 데이터 저장 - NumPy 1.26 호환성: allow_pickle 명시
+        np.save(os.path.join(save_dir, "stage1_data_minmax.npy"), all_windows_s1_minmax, allow_pickle=False)
+        np.save(os.path.join(save_dir, "stage1_data_standard.npy"), all_windows_s1_standard, allow_pickle=False)
+        np.save(os.path.join(save_dir, "stage1_labels.npy"), all_labels_s1, allow_pickle=True)
         
         # Stage2 데이터 저장
         if walking_windows_s2.size > 0:
-            np.save(os.path.join(save_dir, "stage2_data.npy"), walking_windows_s2)
-            np.save(os.path.join(save_dir, "stage2_labels.npy"), walking_labels_s2)
+            np.save(os.path.join(save_dir, "stage2_data.npy"), walking_windows_s2, allow_pickle=False)
+            # Stage2 라벨은 리스트이므로 pickle 사용
+            with open(os.path.join(save_dir, "stage2_labels.pkl"), 'wb') as f:
+                pickle.dump(walking_labels_s2, f)
+            np.save(os.path.join(save_dir, "stage2_subjects.npy"), walking_subjects_s2, allow_pickle=True)
         
         # 스케일러 저장
         with open(os.path.join(save_dir, "minmax_scaler.pkl"), 'wb') as f:
@@ -350,13 +385,14 @@ class GaitDataPreprocessor:
         # 메타데이터 저장
         metadata = {
             'timestamp': self.timestamp,
+            'numpy_version': np.__version__,
             'n_walking_subjects': len(set(walking_subjects)) if walking_subjects else 0,
             'n_non_walking_subjects': len(set(non_walking_subjects)) if non_walking_subjects else 0,
-            'stage1_shape': all_windows_s1_minmax.shape,
-            'stage2_shape': walking_windows_s2.shape,
+            'stage1_shape': list(all_windows_s1_minmax.shape),
+            'stage2_shape': list(walking_windows_s2.shape),
             'walking_subjects': list(set(walking_subjects)) if walking_subjects else [],
             'non_walking_subjects': list(set(non_walking_subjects)) if non_walking_subjects else [],
-            'stage1_label_distribution': {label: int(count) for label, count in zip(*np.unique(all_labels_s1, return_counts=True))},
+            'stage1_label_distribution': {str(label): int(count) for label, count in zip(*np.unique(all_labels_s1, return_counts=True))},
             'total_files_processed': {
                 'walking': len(walking_data),
                 'non_walking': len(non_walking_data)
@@ -371,18 +407,18 @@ class GaitDataPreprocessor:
             json.dump(metadata, f, indent=2)
             
         print("=" * 60)
-        print("✅ 전처리 완료!")
+        print("✅ 전처리 완료! (NumPy 1.26 호환)")
         print("=" * 60)
         print(f"📊 최종 결과:")
         print(f"  📦 Stage1 데이터: {all_windows_s1_minmax.shape}")
         print(f"  📦 Stage2 데이터: {walking_windows_s2.shape}")
         print(f"  📋 라벨 분포: {metadata['stage1_label_distribution']}")
         print(f"  💾 저장 위치: {save_dir}")
+        print(f"  🔢 NumPy 버전: {np.__version__}")
         print("=" * 60)
         
         return save_dir
 
 if __name__ == "__main__":
-    preprocessor = GaitDataPreprocessor()
-    save_path = preprocessor.process_and_save()
-    print(f"전처리된 데이터가 저장되었습니다: {save_path}")
+    preprocessor = GaitDataPreprocessor(base_path=r"C:\Walk_Test")
+    preprocessor.process_and_save()
