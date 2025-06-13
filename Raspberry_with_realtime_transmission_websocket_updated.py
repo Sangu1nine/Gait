@@ -38,7 +38,7 @@ SENSITIVE_ACCEL = 16384.0  # ±2g
 SENSITIVE_GYRO = 131.0     # ±250°/s
 
 # 모델 설정
-MODEL_PATH = 'models/fall_detection.tflite'
+MODEL_PATH = 'models/fall_detection/fall_detection.tflite'
 SCALERS_DIR = 'scalers'
 SEQ_LENGTH = 150  # 모델 입력 shape와 일치시킴 (1.5초)
 STRIDE = 5        # 0.05초마다 예측
