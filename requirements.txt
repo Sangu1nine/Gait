@@ -1,0 +1,22 @@
+# 라즈베리파이 보행 감지 시스템 요구사항
+# Python 3.9 환경용
+
+# 수치 계산 라이브러리
+numpy>=1.19.0,<1.25.0
+
+# 머신러닝 라이브러리 (스케일러 사용)
+scikit-learn>=0.24.0,<1.4.0
+
+# TensorFlow Lite Runtime (라즈베리파이 권장)
+# TensorFlow 2.10으로 만든 모델과 호환
+tflite-runtime>=2.10.0,<2.15.0
+
+# 대안: 전체 TensorFlow (더 많은 리소스 필요)
+# tensorflow>=2.10.0,<2.15.0
+
+# 추가 의존성 (scikit-learn과 함께 설치되지만 명시적으로 포함)
+scipy>=1.5.0,<1.12.0
+
+# 선택적: 성능 향상을 위한 라이브러리
+# setuptools>=45.0.0
+# wheel>=0.36.0 
