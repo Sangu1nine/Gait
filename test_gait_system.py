@@ -109,22 +109,40 @@ def test_tflite_model(test_data):
     print("\n🤖 Testing TFLite model...")
     
     try:
-        # Try importing TensorFlow Lite
+        # Try importing TensorFlow Lite - 라즈베리파이 환경 고려
+        tflite_available = False
+        tf_available = False
+        
+        # 1. TensorFlow 먼저 시도 (라즈베리파이에서 더 안정적)
         try:
             import tensorflow as tf
+            tf_available = True
             print("✅ Using TensorFlow")
         except ImportError:
+            pass
+        
+        # 2. TFLite Runtime 시도
+        if not tf_available:
             try:
                 import tflite_runtime.interpreter as tflite
-                tf = tflite
+                tf = type('tf', (), {'lite': type('lite', (), {'Interpreter': tflite.Interpreter})()})()
+                tflite_available = True
                 print("✅ Using TFLite Runtime")
             except ImportError:
-                print("❌ TensorFlow or TFLite Runtime is required")
-                return False
+                pass
+        
+        # 둘 다 없으면 오류
+        if not tf_available and not tflite_available:
+            print("❌ Neither TensorFlow nor TFLite Runtime is available")
+            return False
         
         # Load model
         model_path = "models/gait_detection/results/gait_detection.tflite"
-        interpreter = tf.lite.Interpreter(model_path=model_path)
+        if tf_available:
+            interpreter = tf.lite.Interpreter(model_path=model_path)
+        else:
+            interpreter = tf.lite.Interpreter(model_path=model_path)
+        
         interpreter.allocate_tensors()
         
         # Check input/output information
@@ -190,8 +208,17 @@ def test_processing_pipeline():
         data_scaled = data_scaled.reshape(60, 6)
         
         # Step 2: TFLite inference
-        import tensorflow as tf
-        interpreter = tf.lite.Interpreter("models/gait_detection/results/gait_detection.tflite")
+        # 라즈베리파이 환경에 맞는 TensorFlow/TFLite 임포트
+        try:
+            import tensorflow as tf
+            interpreter = tf.lite.Interpreter("models/gait_detection/results/gait_detection.tflite")
+        except ImportError:
+            try:
+                import tflite_runtime.interpreter as tflite
+                interpreter = tflite.Interpreter("models/gait_detection/results/gait_detection.tflite")
+            except ImportError:
+                raise ImportError("Neither TensorFlow nor TFLite Runtime is available")
+        
         interpreter.allocate_tensors()
         
         input_details = interpreter.get_input_details()
@@ -244,13 +271,21 @@ def generate_summary_report():
     except:
         print("🧠 scikit-learn: Not installed")
     
+    # 라즈베리파이 환경: TensorFlow와 TFLite Runtime 둘 다 확인
     try:
         import tensorflow as tf
         print(f"🤖 TensorFlow: {tf.__version__}")
+        # TFLite Runtime도 별도 확인
+        try:
+            import tflite_runtime
+            print(f"🔧 TFLite Runtime: Available (with TensorFlow)")
+        except:
+            print(f"🔧 TFLite Runtime: Not separately installed")
     except:
         try:
             import tflite_runtime
-            print(f"🤖 TFLite Runtime: Installed")
+            print(f"🤖 TensorFlow: Not installed")
+            print(f"🔧 TFLite Runtime: Available (standalone)")
         except:
             print("🤖 TensorFlow/TFLite: Not installed")
     

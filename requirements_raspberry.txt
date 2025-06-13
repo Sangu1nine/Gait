@@ -1,0 +1,28 @@
+# Gait Detection System - Raspberry Pi Requirements
+# 라즈베리파이 환경용 패키지 의존성
+
+# Core packages
+numpy>=2.0.2
+scipy>=1.13.1
+scikit-learn>=1.6.1
+joblib>=1.5.1
+
+# TensorFlow/TFLite - 라즈베리파이에서는 둘 중 하나만 필요
+# 옵션 1: 전체 TensorFlow (더 안정적, 메모리 사용량 많음)
+tensorflow>=2.10.0
+
+# 옵션 2: TFLite Runtime만 (가벼움, 추론만 가능)
+# tflite-runtime>=2.10.0
+
+# Optional packages for data analysis/visualization
+pandas>=2.3.0
+matplotlib>=3.9.4
+
+# 설치 가이드:
+# 1. 가상환경 생성: python -m venv .venv
+# 2. 가상환경 활성화: source .venv/bin/activate
+# 3. 패키지 설치: pip install -r requirements_raspberry.txt
+# 
+# 메모리가 제한적인 경우:
+# - TensorFlow 대신 tflite-runtime만 설치
+# - pandas, matplotlib 제외하고 설치 
