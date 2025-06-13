@@ -52,3 +52,7 @@ figs/
 
 # 개발용 노트북 파일들 (용량이 클 수 있음)
 *.ipynb_checkpoints/
+
+#환경변수
+.env
+.venv/
