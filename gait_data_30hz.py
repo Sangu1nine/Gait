@@ -55,7 +55,7 @@ MODEL_PATH = "models/gait_detection/model.tflite"
 SCALER_PATH = "scalers/gait_detection"  # Directory containing scaler file
 WINDOW_SIZE = 60  # Window size for Stage1 model
 TARGET_HZ = 30   # Sampling rate
-GAIT_THRESHOLD = 0.3  # Gait detection threshold (default value)
+GAIT_THRESHOLD = 0.5  # Gait detection threshold (default value)
 
 # Walking-Bout Segmentation parameters
 N1 = 60  # Minimum consecutive gait frames to start walking (≈ 2s @30Hz)
