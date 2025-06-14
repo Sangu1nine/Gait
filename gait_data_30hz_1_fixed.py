@@ -11,6 +11,7 @@ Features:
 from smbus2 import SMBus
 from bitstring import Bits
 import os
+from dotenv import load_dotenv
 import time
 import datetime
 import numpy as np
@@ -55,8 +56,8 @@ GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
 # Supabase configuration
-SUPABASE_URL = "YOUR_SUPABASE_URL"  # Replace with your Supabase URL
-SUPABASE_KEY = "YOUR_SUPABASE_KEY"  # Replace with your Supabase key
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_KEY = os.getenv('SUPABASE_KEY')
 supabase: Client = None
 
 # Global variables for sensor data collection
