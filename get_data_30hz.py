@@ -24,7 +24,7 @@ sensitive_accel = 16384.0
 
 # WiFi 통신 설정
 #WIFI_SERVER_IP = '192.168.0.186' 
-WIFI_SERVER_IP = '172.20.10.1'  # 로컬 PC의 IP 주소 (변경 필요)
+WIFI_SERVER_IP = '172.20.10.12'  # 로컬 PC의 IP 주소 (수정됨)
 WIFI_SERVER_PORT = 5000  # 통신 포트
 wifi_client = None
 wifi_connected = False
