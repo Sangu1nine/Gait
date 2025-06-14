@@ -9,6 +9,7 @@ MODIFIED 2025-01-30: 낙상 감지 스케일러 실제 적용 - 각 센서 채�
 MODIFIED 2025-01-30: 실시간 로그 출력 개선 - 라즈베리파이 콘솔 출력 지연 방지를 위해 flush=True 추가
 MODIFIED 2025-01-30: 멀티스레드 로깅 시스템 구현 - 큐 기반 전용 로깅 스레드로 성능 개선 및 스레드 경합 방지
 MODIFIED 2025-01-30: 센서 수집 디버깅 개선 - 오류 상세 로그, 수집 상태 모니터링, I2C 초기화 검증 추가
+MODIFIED 2025-01-30: I2C 성능 최적화 - 버스트 읽기(14바이트 한번에), 로그 큐 크기 제한, 디버그 주기 단축
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
 - 실시간 센서 데이터 로그 출력 (0.2초 주기, 토글 가능)
@@ -79,7 +80,7 @@ show_sensor_logs = True  # Flag to control sensor data logging
 show_prediction_logs = True  # Flag to control prediction result logging
 
 # Logging system variables
-log_queue = queue.Queue()
+log_queue = queue.Queue(maxsize=100)  # Limit queue size for better performance
 logging_active = True
 
 # Gait detection variables
@@ -207,14 +208,41 @@ def sensor_collection_thread():
     
     while is_running:
         try:
-            # Read IMU sensor data
-            accel_x = accel_ms2(read_data(register_accel_xout_h))
-            accel_y = -accel_ms2(read_data(register_accel_yout_h))
-            accel_z = accel_ms2(read_data(register_accel_zout_h))
-            
-            gyro_x = gyro_dps(read_data(register_gyro_xout_h))
-            gyro_y = gyro_dps(read_data(register_gyro_yout_h))
-            gyro_z = gyro_dps(read_data(register_gyro_zout_h))
+            # Read IMU sensor data using burst read for better performance
+            try:
+                # Read all sensor data at once (14 bytes from 0x3B to 0x48)
+                raw_data = bus.read_i2c_block_data(DEV_ADDR, 0x3B, 14)
+                
+                # Parse accelerometer data (first 6 bytes)
+                accel_x_raw = (raw_data[0] << 8) | raw_data[1]
+                accel_y_raw = (raw_data[2] << 8) | raw_data[3]
+                accel_z_raw = (raw_data[4] << 8) | raw_data[5]
+                
+                # Skip temperature data (bytes 6-7)
+                
+                # Parse gyroscope data (last 6 bytes)
+                gyro_x_raw = (raw_data[8] << 8) | raw_data[9]
+                gyro_y_raw = (raw_data[10] << 8) | raw_data[11]
+                gyro_z_raw = (raw_data[12] << 8) | raw_data[13]
+                
+                # Convert to proper units
+                accel_x = accel_ms2(accel_x_raw)
+                accel_y = -accel_ms2(accel_y_raw)  # Y-axis sign flip
+                accel_z = accel_ms2(accel_z_raw)
+                
+                gyro_x = gyro_dps(gyro_x_raw)
+                gyro_y = gyro_dps(gyro_y_raw)
+                gyro_z = gyro_dps(gyro_z_raw)
+                
+            except Exception as burst_error:
+                # Fallback to individual reads if burst read fails
+                accel_x = accel_ms2(read_data(register_accel_xout_h))
+                accel_y = -accel_ms2(read_data(register_accel_yout_h))
+                accel_z = accel_ms2(read_data(register_accel_zout_h))
+                
+                gyro_x = gyro_dps(read_data(register_gyro_xout_h))
+                gyro_y = gyro_dps(read_data(register_gyro_yout_h))
+                gyro_z = gyro_dps(read_data(register_gyro_zout_h))
             
             # Calculate timestamp
             current_time = time.time()
@@ -247,8 +275,8 @@ def sensor_collection_thread():
             
             frame_count += 1
             
-            # Debug: Log frame count every 300 frames (10 seconds)
-            if frame_count % 300 == 0:
+            # Debug: Log frame count every 150 frames (5 seconds)
+            if frame_count % 150 == 0:
                 fast_log(f"🔧 Sensor collection: {frame_count} frames collected, {frame_count/30:.1f}s runtime")
             
             # Maintain 30Hz sampling rate
