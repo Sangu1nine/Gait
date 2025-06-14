@@ -8,6 +8,7 @@ MODIFIED 2025-01-30: 실시간 모델 예측 결과 로그 출력 기능 추가 
 MODIFIED 2025-01-30: 낙상 감지 스케일러 실제 적용 - 각 센서 채널별로 MinMax/Standard 스케일러 적용 구현
 MODIFIED 2025-01-30: 실시간 로그 출력 개선 - 라즈베리파이 콘솔 출력 지연 방지를 위해 flush=True 추가
 MODIFIED 2025-01-30: 멀티스레드 로깅 시스템 구현 - 큐 기반 전용 로깅 스레드로 성능 개선 및 스레드 경합 방지
+MODIFIED 2025-01-30: 센서 수집 디버깅 개선 - 오류 상세 로그, 수집 상태 모니터링, I2C 초기화 검증 추가
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
 - 실시간 센서 데이터 로그 출력 (0.2초 주기, 토글 가능)
@@ -246,6 +247,10 @@ def sensor_collection_thread():
             
             frame_count += 1
             
+            # Debug: Log frame count every 300 frames (10 seconds)
+            if frame_count % 300 == 0:
+                fast_log(f"🔧 Sensor collection: {frame_count} frames collected, {frame_count/30:.1f}s runtime")
+            
             # Maintain 30Hz sampling rate
             next_sample_time = start_time + (frame_count * (1.0 / TARGET_HZ))
             sleep_time = next_sample_time - time.time()
@@ -254,8 +259,9 @@ def sensor_collection_thread():
                 time.sleep(sleep_time)
                 
         except Exception as e:
-            print(f"❌ Sensor collection error: {e}")
-            time.sleep(0.01)
+            fast_log(f"❌ Sensor collection error: {e}")
+            fast_log(f"🔧 Debug info - Frame: {frame_count}, Time: {time.time():.3f}")
+            time.sleep(0.1)  # Longer sleep when error occurs
 
 def preprocess_for_gait(sensor_window):
     """Preprocess sensor data for gait detection"""
@@ -593,8 +599,17 @@ def main():
     load_models()
     
     # Initialize IMU sensor
-    bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
-    print("✅ IMU sensor initialized")
+    try:
+        bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
+        print("✅ IMU sensor initialized")
+        
+        # Test sensor reading
+        test_read = bus.read_byte_data(DEV_ADDR, 0x75)  # WHO_AM_I register
+        print(f"✅ Sensor test read - WHO_AM_I: 0x{test_read:02X}")
+    except Exception as e:
+        print(f"❌ IMU sensor initialization failed: {e}")
+        print("💡 Check I2C connections and sensor power")
+        return
     
     # Start threads
     is_running = True
