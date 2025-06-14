@@ -106,8 +106,17 @@ def init_supabase():
     global supabase
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✅ Supabase initialized successfully")
-        return True
+        
+        # 실제 인증 테스트
+        try:
+            # 간단한 테스트 쿼리 실행
+            response = supabase.table('fall_history').select('count').limit(1).execute()
+            print("✅ Supabase initialized and authenticated successfully")
+            return True
+        except Exception as auth_error:
+            print(f"❌ Supabase authentication failed: {auth_error}")
+            return False
+            
     except Exception as e:
         print(f"❌ Supabase initialization failed: {e}")
         return False
@@ -511,7 +520,8 @@ def main():
     
     # Initialize Supabase
     if not init_supabase():
-        print("⚠️ Continuing without Supabase")
+        print("⚠️ Continuing without Supabase - data will be saved locally only")
+        print("⚠️ Please check your SUPABASE_URL and SUPABASE_KEY in .env file")
     
     # Load models
     load_models()
