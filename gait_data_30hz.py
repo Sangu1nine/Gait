@@ -6,6 +6,7 @@ MODIFIED 2025-01-30: 낙상 감지 모델 윈도우 크기 수정 (60 → 150 �
 MODIFIED 2025-01-30: Y축 부호 처리 중복 제거 (센서 수집에서만 처리)
 MODIFIED 2025-01-30: 실시간 모델 예측 결과 로그 출력 기능 추가 - 센서 로그 주기 단축 (0.5초 → 0.2초), 예측 결과 로그 (0.3초 주기), 키보드 제어 추가
 MODIFIED 2025-01-30: 낙상 감지 스케일러 실제 적용 - 각 센서 채널별로 MinMax/Standard 스케일러 적용 구현
+MODIFIED 2025-01-30: 실시간 로그 출력 개선 - 라즈베리파이 콘솔 출력 지연 방지를 위해 flush=True 추가
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
 - 실시간 센서 데이터 로그 출력 (0.2초 주기, 토글 가능)
@@ -212,7 +213,7 @@ def sensor_collection_thread():
                 if current_log_time - last_log_time >= 0.2:
                     print(f"📊 Frame {frame_count:4d} | "
                           f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
-                          f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}")
+                          f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}", flush=True)
                     last_log_time = current_log_time
             
             frame_count += 1
@@ -342,7 +343,7 @@ def gait_detection_thread():
                     # Log prediction results every 10 predictions (~0.3 seconds)
                     if show_prediction_logs and prediction_update_count % 10 == 0:
                         print(f"🤖 Gait Prediction: {gait_probability:.3f} | State: {gait_state} | "
-                              f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}")
+                              f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}", flush=True)
                     
                     prediction_update_count += 1
                     
@@ -359,7 +360,7 @@ def gait_detection_thread():
                         gait_state = "gait"
                         current_gait_start_frame = sensor_window[0]['frame']
                         current_gait_data = []
-                        print(f"🚶 Gait started at frame {current_gait_start_frame}")
+                        print(f"🚶 Gait started at frame {current_gait_start_frame}", flush=True)
                     
                     elif gait_state == "gait":
                         # Add current frame data to gait data
@@ -417,13 +418,13 @@ def fall_detection_thread():
                     
                     # Log prediction results every 10 predictions (~0.3 seconds)
                     if show_prediction_logs and fall_prediction_count % 10 == 0:
-                        print(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}")
+                        print(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}", flush=True)
                     
                     fall_prediction_count += 1
                     
                     # Check for fall
                     if fall_probability > FALL_THRESHOLD:
-                        print(f"🚨 Fall detected! Probability: {fall_probability:.2f}")
+                        print(f"🚨 Fall detected! Probability: {fall_probability:.2f}", flush=True)
                         save_fall_event_to_supabase(sensor_window[-1]['unix_timestamp'])
             
             time.sleep(0.033)  # ~30Hz
@@ -505,14 +506,14 @@ def toggle_sensor_logs():
     global show_sensor_logs
     show_sensor_logs = not show_sensor_logs
     status = "ON" if show_sensor_logs else "OFF"
-    print(f"📊 Sensor logging: {status}")
+    print(f"📊 Sensor logging: {status}", flush=True)
 
 def toggle_prediction_logs():
     """Toggle prediction data logging on/off"""
     global show_prediction_logs
     show_prediction_logs = not show_prediction_logs
     status = "ON" if show_prediction_logs else "OFF"
-    print(f"🤖 Prediction logging: {status}")
+    print(f"🤖 Prediction logging: {status}", flush=True)
 
 def print_detailed_sensor_status():
     """Print detailed sensor and system status"""
