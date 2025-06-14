@@ -1,5 +1,9 @@
 {
-  "timestamp": "20250612_151225",
+  "timestamp": "20250614_193753",
+  "python_version": "3.9+",
+  "numpy_version": "1.23.5+",
+  "tensorflow_version": "2.10.0+",
+  "processing_stage": "stage1_only",
   "n_walking_subjects": 4,
   "n_non_walking_subjects": 32,
   "stage1_shape": [
@@ -7,50 +11,45 @@
     60,
     6
   ],
-  "stage2_shape": [
-    163972,
-    15,
-    6
-  ],
   "walking_subjects": [
-    "SA02",
     "SA03",
     "SA04",
+    "SA02",
     "SA01"
   ],
   "non_walking_subjects": [
-    "SA20",
+    "SA24",
+    "SA10",
+    "SA12",
+    "SA17",
+    "SA19",
+    "SA36",
+    "SA14",
+    "SA13",
+    "SA38",
+    "SA33",
+    "SA21",
+    "SA37",
+    "SA29",
+    "SA27",
+    "SA32",
+    "SA35",
+    "SA18",
+    "SA09",
+    "SA31",
+    "SA28",
+    "SA11",
+    "SA22",
+    "SA07",
+    "SA08",
+    "SA25",
+    "SA23",
     "SA30",
     "SA15",
     "SA16",
-    "SA35",
-    "SA27",
+    "SA20",
     "SA06",
-    "SA36",
-    "SA09",
-    "SA29",
-    "SA12",
-    "SA33",
-    "SA32",
-    "SA10",
-    "SA08",
-    "SA11",
-    "SA07",
-    "SA25",
-    "SA26",
-    "SA23",
-    "SA14",
-    "SA28",
-    "SA31",
-    "SA24",
-    "SA38",
-    "SA22",
-    "SA13",
-    "SA18",
-    "SA17",
-    "SA37",
-    "SA21",
-    "SA19"
+    "SA26"
   ],
   "stage1_label_distribution": {
     "gait": 5033,
@@ -59,5 +58,14 @@
   "total_files_processed": {
     "walking": 317,
     "non_walking": 664
+  },
+  "data_types": {
+    "stage1_data": "float32",
+    "labels": "string"
+  },
+  "window_config": {
+    "window_size": 60,
+    "stride": 30,
+    "sampling_rate": 30
   }
 }
