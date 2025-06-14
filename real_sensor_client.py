@@ -28,7 +28,7 @@ except ImportError:
     print("pip install -r requirements.txt")
 
 class RealSensorClient:
-    def __init__(self, server_host="172.30.1.93", server_port=8765, output_format="json"):
+    def __init__(self, server_host="172.20.10.12", server_port=8765, output_format="json"):
         self.server_host = server_host
         self.server_port = server_port
         self.server_url = f"ws://{server_host}:{server_port}"
