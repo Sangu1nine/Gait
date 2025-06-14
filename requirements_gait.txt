@@ -1,0 +1,4 @@
+websockets>=10.4
+adafruit-circuitpython-mpu6050
+adafruit-blinka
+RPi.GPIO 
