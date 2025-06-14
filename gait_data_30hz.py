@@ -49,8 +49,8 @@ wifi_connected = False
 send_data_queue = []
 
 # Gait detection related settings
-MODEL_PATH = "Gait/models/gait_detection/model.tflite"
-SCALER_PATH = "Gait/scalers/gait_detection"  # Directory containing scaler file
+MODEL_PATH = "models/gait_detection/model.tflite"
+SCALER_PATH = "scalers/gait_detection"  # Directory containing scaler file
 WINDOW_SIZE = 60  # Window size for Stage1 model
 TARGET_HZ = 30   # Sampling rate
 GAIT_THRESHOLD = 0.2  # Gait detection threshold (default value)
@@ -159,10 +159,15 @@ def connect_wifi():
     global wifi_client, wifi_connected
     try:
         wifi_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        wifi_client.settimeout(5.0)  # 5 second timeout
         wifi_client.connect((WIFI_SERVER_IP, WIFI_SERVER_PORT))
         wifi_connected = True
         print(f"✅ WiFi connection successful: {WIFI_SERVER_IP}:{WIFI_SERVER_PORT}")
         return True
+    except socket.timeout:
+        print(f"❌ WiFi connection timeout: {WIFI_SERVER_IP}:{WIFI_SERVER_PORT}")
+        wifi_connected = False
+        return False
     except Exception as e:
         print(f"❌ WiFi connection failed: {str(e)}")
         wifi_connected = False
