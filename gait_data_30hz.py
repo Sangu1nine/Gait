@@ -1,11 +1,14 @@
 """
 보행 및 낙상 감지 IMU 센서 데이터 수집 프로그램
 Created: 2025-01-30
+MODIFIED 2025-01-30: 실시간 센서 데이터 로그 출력 기능 추가
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
+- 실시간 센서 데이터 로그 출력 (토글 가능)
 - 실시간 보행 감지 (TensorFlow Lite)
 - 실시간 낙상 감지 (TensorFlow Lite)
 - Supabase 직접 업로드
+- 키보드 제어: 's' (로그 토글), 'd' (상세 상태)
 """
 
 from smbus2 import SMBus
@@ -62,6 +65,7 @@ supabase: Client = None
 sensor_data_lock = threading.Lock()
 raw_sensor_buffer = deque(maxlen=WINDOW_SIZE * 10)  # Store more for CSV saving
 is_running = False
+show_sensor_logs = True  # Flag to control sensor data logging
 
 # Gait detection variables
 gait_interpreter = None
@@ -153,10 +157,11 @@ def load_models():
 
 def sensor_collection_thread():
     """Thread for collecting sensor data at 30Hz"""
-    global raw_sensor_buffer, is_running
+    global raw_sensor_buffer, is_running, show_sensor_logs
     
     start_time = time.time()
     frame_count = 0
+    last_log_time = time.time()
     
     while is_running:
         try:
@@ -188,6 +193,15 @@ def sensor_collection_thread():
             
             with sensor_data_lock:
                 raw_sensor_buffer.append(sensor_data)
+            
+            # Log sensor data every 0.5 seconds (15 frames at 30Hz)
+            if show_sensor_logs and frame_count % 15 == 0:
+                current_log_time = time.time()
+                if current_log_time - last_log_time >= 0.5:
+                    print(f"📊 Frame {frame_count:4d} | "
+                          f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
+                          f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}")
+                    last_log_time = current_log_time
             
             frame_count += 1
             
@@ -431,6 +445,42 @@ def save_fall_event_to_supabase(timestamp):
     except Exception as e:
         print(f"❌ Failed to save fall event: {e}")
 
+def toggle_sensor_logs():
+    """Toggle sensor data logging on/off"""
+    global show_sensor_logs
+    show_sensor_logs = not show_sensor_logs
+    status = "ON" if show_sensor_logs else "OFF"
+    print(f"📊 Sensor logging: {status}")
+
+def print_detailed_sensor_status():
+    """Print detailed sensor and system status"""
+    with sensor_data_lock:
+        if len(raw_sensor_buffer) > 0:
+            latest_data = raw_sensor_buffer[-1]
+            buffer_size = len(raw_sensor_buffer)
+            
+            print("\n" + "="*80)
+            print("📊 DETAILED SENSOR STATUS")
+            print("="*80)
+            print(f"Frame Number: {latest_data['frame']}")
+            print(f"Sync Timestamp: {latest_data['sync_timestamp']:.3f}s")
+            print(f"Buffer Size: {buffer_size}/{WINDOW_SIZE * 10}")
+            print(f"Gait State: {gait_state}")
+            print(f"Sensor Logging: {'ON' if show_sensor_logs else 'OFF'}")
+            print("-" * 80)
+            print("ACCELEROMETER (m/s²):")
+            print(f"  X: {latest_data['accel_x']:8.3f}")
+            print(f"  Y: {latest_data['accel_y']:8.3f}")
+            print(f"  Z: {latest_data['accel_z']:8.3f}")
+            print("-" * 80)
+            print("GYROSCOPE (°/s):")
+            print(f"  X: {latest_data['gyro_x']:8.3f}")
+            print(f"  Y: {latest_data['gyro_y']:8.3f}")
+            print(f"  Z: {latest_data['gyro_z']:8.3f}")
+            print("="*80)
+        else:
+            print("❌ No sensor data available")
+
 def main():
     """Main execution function"""
     global is_running
@@ -468,14 +518,41 @@ def main():
     fall_thread.start()
     print("✅ Fall detection thread started")
     
-    print("\nPress Ctrl+C to stop\n")
+    print("\n" + "="*60)
+    print("⌨️  CONTROL COMMANDS:")
+    print("   Enter 's' and press Enter: Toggle sensor data logging")
+    print("   Enter 'd' and press Enter: Show detailed sensor status")
+    print("   Ctrl+C: Stop system")
+    print("="*60)
+    print(f"📊 Sensor logging: {'ON' if show_sensor_logs else 'OFF'}")
+    print("\nSystem running... (enter commands above)")
+    print("TIP: Sensor data logs appear every 0.5 seconds when logging is ON\n")
+    
+    # Start input handling thread for Windows compatibility
+    def input_handler():
+        """Handle user input in separate thread"""
+        while is_running:
+            try:
+                user_input = input().strip().lower()
+                if user_input == 's':
+                    toggle_sensor_logs()
+                elif user_input == 'd':
+                    print_detailed_sensor_status()
+                elif user_input == 'h' or user_input == 'help':
+                    print("\n⌨️  Available commands: 's' (toggle logs), 'd' (detailed status)\n")
+            except:
+                break
+    
+    input_thread = threading.Thread(target=input_handler)
+    input_thread.daemon = True
+    input_thread.start()
     
     try:
         while True:
             time.sleep(1)
             
-            # Print status every 5 seconds
-            if int(time.time()) % 5 == 0:
+            # Print basic status every 10 seconds (only if sensor logging is off)
+            if not show_sensor_logs and int(time.time()) % 10 == 0:
                 with sensor_data_lock:
                     buffer_size = len(raw_sensor_buffer)
                 print(f"📊 Status - Buffer: {buffer_size}, State: {gait_state}")
