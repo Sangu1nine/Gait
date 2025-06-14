@@ -80,7 +80,8 @@ show_sensor_logs = True  # Flag to control sensor data logging
 show_prediction_logs = True  # Flag to control prediction result logging
 
 # Logging system variables
-log_queue = queue.Queue(maxsize=100)  # Limit queue size for better performance
+LOG_BATCH = 10
+log_queue = queue.Queue(maxsize=1000)  # Increased queue size for batch processing
 logging_active = True
 
 # Gait detection variables
@@ -185,16 +186,26 @@ def fast_log(message):
             pass  # Drop log if queue is full to avoid blocking
 
 def logging_thread():
-    """Dedicated thread for handling all log output"""
+    """Dedicated thread for handling all log output with batch processing"""
     global logging_active
+    batch = []
     while is_running or not log_queue.empty():
         try:
-            message = log_queue.get(timeout=0.1)
-            print(message, flush=True)
+            line = log_queue.get(timeout=0.05)
+            batch.append(line)
+            if len(batch) >= LOG_BATCH:
+                print("\n".join(batch), flush=True)
+                batch.clear()
             log_queue.task_done()
         except queue.Empty:
+            if batch:  # 남은 줄 출력
+                print("\n".join(batch), flush=True)
+                batch.clear()
             continue
         except Exception as e:
+            if batch:  # 에러 발생 시에도 남은 로그 출력
+                print("\n".join(batch), flush=True)
+                batch.clear()
             print(f"❌ Logging error: {e}", flush=True)
     logging_active = False
 
@@ -264,10 +275,10 @@ def sensor_collection_thread():
             with sensor_data_lock:
                 raw_sensor_buffer.append(sensor_data)
             
-            # Log sensor data every 0.2 seconds (6 frames at 30Hz)
-            if show_sensor_logs and frame_count % 6 == 0:
+            # Log sensor data every 1 second (30 frames at 30Hz)
+            if show_sensor_logs and frame_count % 30 == 0:
                 current_log_time = time.time()
-                if current_log_time - last_log_time >= 0.2:
+                if current_log_time - last_log_time >= 1.0:
                     fast_log(f"📊 Frame {frame_count:4d} | "
                             f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
                             f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}")
@@ -673,7 +684,7 @@ def main():
     print(f"📊 Sensor logging: {'ON' if show_sensor_logs else 'OFF'}")
     print(f"🤖 Prediction logging: {'ON' if show_prediction_logs else 'OFF'}")
     print("\nSystem running... (enter commands above)")
-    print("TIP: Sensor data logs appear every 0.2 seconds when logging is ON")
+    print("TIP: Sensor data logs appear every 1 second when logging is ON")
     print("TIP: Prediction results appear every 0.3 seconds when logging is ON\n")
     
     # Start input handling thread for Windows compatibility
