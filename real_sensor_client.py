@@ -3,6 +3,7 @@
 """
 Raspberry Pi Real Sensor Data WebSocket Transmission Client
 Created: 2024-12-28
+Modified: 2024-12-28 - Applied smbus2-based sensor reading method from get_data_100hz.py
 Function: Real-time transmission of MPU6050 IMU sensor data to server via WebSocket
 Sensor Connection: SDA -> GPIO 2 (Pin 3), SCL -> GPIO 3 (Pin 5), VCC -> 3.3V, GND -> GND
 """
@@ -17,15 +18,15 @@ import logging
 from datetime import datetime
 
 try:
-    import board
-    import busio
-    import adafruit_mpu6050
+    from smbus2 import SMBus
+    from bitstring import Bits
+    import math
     SENSOR_AVAILABLE = True
 except ImportError:
     SENSOR_AVAILABLE = False
     print("Sensor libraries not found. Running in simulation mode.")
     print("To use real sensors, run the following command:")
-    print("pip install -r requirements.txt")
+    print("pip install smbus2 bitstring")
 
 class RealSensorClient:
     def __init__(self, server_host="172.20.10.12", server_port=8765, output_format="json"):
@@ -36,6 +37,21 @@ class RealSensorClient:
         self.running = False
         self.frame_number = 0
         self.start_time = time.time()
+        
+        # MPU6050 센서 설정 (get_data_100hz.py에서 가져옴)
+        self.DEV_ADDR = 0x68
+        
+        # 자이로스코프 레지스터
+        self.register_gyro_xout_h = 0x43
+        self.register_gyro_yout_h = 0x45
+        self.register_gyro_zout_h = 0x47
+        self.sensitive_gyro = 131.0
+        
+        # 가속도계 레지스터
+        self.register_accel_xout_h = 0x3B
+        self.register_accel_yout_h = 0x3D
+        self.register_accel_zout_h = 0x3F
+        self.sensitive_accel = 16384.0
         
         # CSV header definition
         self.csv_header = [
@@ -54,32 +70,50 @@ class RealSensorClient:
         """Initialize sensor"""
         if SENSOR_AVAILABLE:
             try:
-                self.i2c = busio.I2C(board.SCL, board.SDA)
-                self.mpu = adafruit_mpu6050.MPU6050(self.i2c)
-                self.logger.info("MPU6050 sensor initialization completed")
+                self.bus = SMBus(1)
+                # 센서 초기화 (get_data_100hz.py에서 가져옴)
+                self.bus.write_byte_data(self.DEV_ADDR, 0x6B, 0b00000000)
+                self.logger.info("MPU6050 sensor initialization completed (smbus2)")
             except Exception as e:
                 self.logger.error(f"Sensor initialization failed: {e}")
-                self.mpu = None
+                self.bus = None
         else:
-            self.mpu = None
+            self.bus = None
+    
+    def read_data(self, register):
+        """레지스터에서 16비트 데이터 읽기 (get_data_100hz.py에서 가져옴)"""
+        high = self.bus.read_byte_data(self.DEV_ADDR, register)
+        low = self.bus.read_byte_data(self.DEV_ADDR, register + 1)
+        val = (high << 8) + low
+        return val
+    
+    def twocomplements(self, val):
+        """2의 보수 변환 (get_data_100hz.py에서 가져옴)"""
+        s = Bits(uint=val, length=16)
+        return s.int
+    
+    def gyro_dps(self, val):
+        """자이로스코프 데이터를 degree/second로 변환 (get_data_100hz.py에서 가져옴)"""
+        return self.twocomplements(val) / self.sensitive_gyro
+    
+    def accel_g(self, val):
+        """가속도 데이터를 g로 변환 (get_data_100hz.py에서 가져옴)"""
+        return self.twocomplements(val) / self.sensitive_accel
     
     def get_sensor_data(self):
         """Read sensor data"""
         # Calculate timestamp based on frame number for consistent 30Hz timing
         sync_timestamp = round(self.frame_number * 0.033, 3)
         
-        if self.mpu is not None:
+        if self.bus is not None:
             try:
-                # Read actual sensor data
-                acceleration = self.mpu.acceleration
-                gyro = self.mpu.gyro
-                
-                accel_x = round(acceleration[0], 3)
-                accel_y = round(acceleration[1], 3)
-                accel_z = round(acceleration[2], 3)
-                gyro_x = round(gyro[0], 5)
-                gyro_y = round(gyro[1], 5)
-                gyro_z = round(gyro[2], 5)
+                # Read actual sensor data using smbus2 method
+                accel_x = round(self.accel_g(self.read_data(self.register_accel_xout_h)), 3)
+                accel_y = round(self.accel_g(self.read_data(self.register_accel_yout_h)), 3)
+                accel_z = round(self.accel_g(self.read_data(self.register_accel_zout_h)), 3)
+                gyro_x = round(self.gyro_dps(self.read_data(self.register_gyro_xout_h)), 5)
+                gyro_y = round(self.gyro_dps(self.read_data(self.register_gyro_yout_h)), 5)
+                gyro_z = round(self.gyro_dps(self.read_data(self.register_gyro_zout_h)), 5)
                 
             except Exception as e:
                 self.logger.error(f"Failed to read sensor data: {e}")
@@ -175,6 +209,9 @@ class RealSensorClient:
     def stop(self):
         """Stop data transmission"""
         self.running = False
+        if self.bus:
+            self.bus.close()
+            self.logger.info("I2C bus closed")
         self.logger.info("Sensor data transmission stopped.")
 
 def main():
@@ -190,6 +227,7 @@ def main():
     print(f"Raspberry Pi Sensor Data Transmission Client")
     print(f"Server Address: 172.20.10.12:8765")
     print(f"Output Format: {output_format.upper()}")
+    print(f"Sensor Interface: smbus2 (Direct register access)")
     print(f"Press Ctrl+C to exit.")
     print("-" * 50)
     
