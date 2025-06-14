@@ -55,12 +55,12 @@ MODEL_PATH = "models/gait_detection/model.tflite"
 SCALER_PATH = "scalers/gait_detection"  # Directory containing scaler file
 WINDOW_SIZE = 60  # Window size for Stage1 model
 TARGET_HZ = 30   # Sampling rate
-GAIT_THRESHOLD = 0.2  # Gait detection threshold (default value)
+GAIT_THRESHOLD = 0.3  # Gait detection threshold (default value)
 
 # Walking-Bout Segmentation parameters
 N1 = 60  # Minimum consecutive gait frames to start walking (≈ 2s @30Hz)
 N2 = 60  # Minimum consecutive non-gait frames to end walking (≈ 2s @30Hz)
-THETA = 0.20  # Gait probability threshold
+# Note: Using GAIT_THRESHOLD (0.2) for gait probability threshold
 
 # Walking-Bout Segmentation states
 IDLE = "IDLE"
@@ -294,7 +294,7 @@ def update_walking_bout_state(gait_status, gait_probability):
     
     elif current_state == WALKING:
         # Continue transmission if gait probability > threshold
-        if gait_probability > THETA:
+        if gait_probability > GAIT_THRESHOLD:
             should_transmit = True
         
         # WALKING → POST_WALK: N2 consecutive non-gait frames
@@ -335,7 +335,7 @@ def main():
     
     print(f"📄 Complete data log file: {log_filename}")
     print(f"🎯 Gait detection threshold: {GAIT_THRESHOLD}")
-    print(f"📊 Walking-Bout parameters: N1={N1}, N2={N2}, θ={THETA}")
+    print(f"📊 Walking-Bout parameters: N1={N1}, N2={N2}, θ={GAIT_THRESHOLD}")
     print(f"🔄 Initial state: {current_state}")
     print("Press Ctrl+C to stop collection")
     
