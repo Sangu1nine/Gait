@@ -70,10 +70,18 @@ class RealSensorClient:
         """Initialize sensor"""
         if SENSOR_AVAILABLE:
             try:
+                # I2C 버스 속도를 낮춰서 안정성 향상
                 self.bus = SMBus(1)
-                # 센서 초기화 (get_data_100hz.py에서 가져옴)
+                
+                # 센서 초기화 (get_data_100hz.py와 동일한 방식)
                 self.bus.write_byte_data(self.DEV_ADDR, 0x6B, 0b00000000)
                 time.sleep(0.1)  # 센서 초기화 대기
+                
+                # 추가 센서 설정 (안정성 향상)
+                self.bus.write_byte_data(self.DEV_ADDR, 0x1A, 0x00)  # CONFIG 레지스터 - 필터 비활성화
+                self.bus.write_byte_data(self.DEV_ADDR, 0x1B, 0x00)  # GYRO_CONFIG - ±250°/s
+                self.bus.write_byte_data(self.DEV_ADDR, 0x1C, 0x00)  # ACCEL_CONFIG - ±2g
+                time.sleep(0.05)  # 추가 설정 대기
                 
                 # 센서 연결 테스트
                 test_val = self.bus.read_byte_data(self.DEV_ADDR, 0x75)  # WHO_AM_I 레지스터
@@ -92,14 +100,16 @@ class RealSensorClient:
         """레지스터에서 16비트 데이터 읽기 (재시도 로직 포함)"""
         for attempt in range(retry_count):
             try:
+                # 연속 레지스터 읽기 사이에 짧은 지연 추가
                 high = self.bus.read_byte_data(self.DEV_ADDR, register)
+                time.sleep(0.0001)  # 0.1ms 지연
                 low = self.bus.read_byte_data(self.DEV_ADDR, register + 1)
                 val = (high << 8) + low
                 return val
             except Exception as e:
                 if attempt == retry_count - 1:  # 마지막 시도
                     raise e
-                time.sleep(0.001)  # 1ms 대기 후 재시도
+                time.sleep(0.002)  # 2ms 대기 후 재시도
     
     def twocomplements(self, val):
         """2의 보수 변환 (get_data_100hz.py에서 가져옴)"""
@@ -120,26 +130,33 @@ class RealSensorClient:
         sync_timestamp = round(self.frame_number * 0.033, 3)
         
         if self.bus is not None:
-            max_retries = 2
+            max_retries = 3  # 재시도 횟수 증가
             for retry in range(max_retries):
                 try:
-                    # Read actual sensor data using smbus2 method
+                    # 센서 데이터 읽기 사이에 짧은 지연 추가 (안정성 향상)
                     accel_x = round(self.accel_g(self.read_data(self.register_accel_xout_h)), 3)
+                    time.sleep(0.0005)  # 0.5ms 지연
                     accel_y = round(self.accel_g(self.read_data(self.register_accel_yout_h)), 3)
+                    time.sleep(0.0005)
                     accel_z = round(self.accel_g(self.read_data(self.register_accel_zout_h)), 3)
+                    time.sleep(0.0005)
                     gyro_x = round(self.gyro_dps(self.read_data(self.register_gyro_xout_h)), 5)
+                    time.sleep(0.0005)
                     gyro_y = round(self.gyro_dps(self.read_data(self.register_gyro_yout_h)), 5)
+                    time.sleep(0.0005)
                     gyro_z = round(self.gyro_dps(self.read_data(self.register_gyro_zout_h)), 5)
                     break  # 성공하면 루프 종료
                     
                 except Exception as e:
                     if retry == max_retries - 1:  # 마지막 재시도
-                        self.logger.error(f"Failed to read sensor data after {max_retries} attempts: {e}")
+                        # 에러 빈도를 줄이기 위해 10번에 1번만 로그 출력
+                        if self.frame_number % 10 == 0:
+                            self.logger.error(f"Failed to read sensor data after {max_retries} attempts: {e}")
                         # Use default values on error
                         accel_x, accel_y, accel_z = 0.0, 9.8, 0.0
                         gyro_x, gyro_y, gyro_z = 0.0, 0.0, 0.0
                     else:
-                        time.sleep(0.005)  # 5ms 대기 후 재시도
+                        time.sleep(0.01)  # 10ms 대기 후 재시도
         else:
             # Simulation data
             import random
