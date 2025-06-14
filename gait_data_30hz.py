@@ -257,7 +257,7 @@ def preprocess_for_fall(sensor_window):
         for data in sensor_window:
             # Apply transformations for fall detection
             acc_x = data['accel_x'] / 9.80665
-            acc_y = data['accel_y'] / 9.80665  # No sign change (already done in sensor collection)
+            acc_y = -data['accel_y'] / 9.80665  # No sign change (already done in sensor collection)
             acc_z = data['accel_z'] / 9.80665
             gyr_x = data['gyro_x']
             gyr_y = data['gyro_y']
