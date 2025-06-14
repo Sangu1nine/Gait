@@ -7,6 +7,7 @@ MODIFIED 2025-01-30: Y축 부호 처리 중복 제거 (센서 수집에서만 �
 MODIFIED 2025-01-30: 실시간 모델 예측 결과 로그 출력 기능 추가 - 센서 로그 주기 단축 (0.5초 → 0.2초), 예측 결과 로그 (0.3초 주기), 키보드 제어 추가
 MODIFIED 2025-01-30: 낙상 감지 스케일러 실제 적용 - 각 센서 채널별로 MinMax/Standard 스케일러 적용 구현
 MODIFIED 2025-01-30: 실시간 로그 출력 개선 - 라즈베리파이 콘솔 출력 지연 방지를 위해 flush=True 추가
+MODIFIED 2025-01-30: 멀티스레드 로깅 시스템 구현 - 큐 기반 전용 로깅 스레드로 성능 개선 및 스레드 경합 방지
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
 - 실시간 센서 데이터 로그 출력 (0.2초 주기, 토글 가능)
@@ -30,6 +31,7 @@ import tensorflow as tf
 from supabase import create_client, Client
 import io
 import csv
+import queue
 
 # Global variables
 bus = SMBus(1)
@@ -74,6 +76,10 @@ raw_sensor_buffer = deque(maxlen=max(GAIT_WINDOW_SIZE, FALL_WINDOW_SIZE) * 10)  
 is_running = False
 show_sensor_logs = True  # Flag to control sensor data logging
 show_prediction_logs = True  # Flag to control prediction result logging
+
+# Logging system variables
+log_queue = queue.Queue()
+logging_active = True
 
 # Gait detection variables
 gait_interpreter = None
@@ -168,6 +174,28 @@ def load_models():
     except Exception as e:
         print(f"❌ Fall model loading error: {e}")
 
+def fast_log(message):
+    """Fast logging function using queue"""
+    if logging_active:
+        try:
+            log_queue.put_nowait(message)
+        except queue.Full:
+            pass  # Drop log if queue is full to avoid blocking
+
+def logging_thread():
+    """Dedicated thread for handling all log output"""
+    global logging_active
+    while is_running or not log_queue.empty():
+        try:
+            message = log_queue.get(timeout=0.1)
+            print(message, flush=True)
+            log_queue.task_done()
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"❌ Logging error: {e}", flush=True)
+    logging_active = False
+
 def sensor_collection_thread():
     """Thread for collecting sensor data at 30Hz"""
     global raw_sensor_buffer, is_running, show_sensor_logs
@@ -211,9 +239,9 @@ def sensor_collection_thread():
             if show_sensor_logs and frame_count % 6 == 0:
                 current_log_time = time.time()
                 if current_log_time - last_log_time >= 0.2:
-                    print(f"📊 Frame {frame_count:4d} | "
-                          f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
-                          f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}", flush=True)
+                    fast_log(f"📊 Frame {frame_count:4d} | "
+                            f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
+                            f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}")
                     last_log_time = current_log_time
             
             frame_count += 1
@@ -342,8 +370,8 @@ def gait_detection_thread():
                     
                     # Log prediction results every 10 predictions (~0.3 seconds)
                     if show_prediction_logs and prediction_update_count % 10 == 0:
-                        print(f"🤖 Gait Prediction: {gait_probability:.3f} | State: {gait_state} | "
-                              f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}", flush=True)
+                        fast_log(f"🤖 Gait Prediction: {gait_probability:.3f} | State: {gait_state} | "
+                                f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}")
                     
                     prediction_update_count += 1
                     
@@ -360,7 +388,7 @@ def gait_detection_thread():
                         gait_state = "gait"
                         current_gait_start_frame = sensor_window[0]['frame']
                         current_gait_data = []
-                        print(f"🚶 Gait started at frame {current_gait_start_frame}", flush=True)
+                        fast_log(f"🚶 Gait started at frame {current_gait_start_frame}")
                     
                     elif gait_state == "gait":
                         # Add current frame data to gait data
@@ -418,13 +446,13 @@ def fall_detection_thread():
                     
                     # Log prediction results every 10 predictions (~0.3 seconds)
                     if show_prediction_logs and fall_prediction_count % 10 == 0:
-                        print(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}", flush=True)
+                        fast_log(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}")
                     
                     fall_prediction_count += 1
                     
                     # Check for fall
                     if fall_probability > FALL_THRESHOLD:
-                        print(f"🚨 Fall detected! Probability: {fall_probability:.2f}", flush=True)
+                        fast_log(f"🚨 Fall detected! Probability: {fall_probability:.2f}")
                         save_fall_event_to_supabase(sensor_window[-1]['unix_timestamp'])
             
             time.sleep(0.033)  # ~30Hz
@@ -506,14 +534,14 @@ def toggle_sensor_logs():
     global show_sensor_logs
     show_sensor_logs = not show_sensor_logs
     status = "ON" if show_sensor_logs else "OFF"
-    print(f"📊 Sensor logging: {status}", flush=True)
+    fast_log(f"📊 Sensor logging: {status}")
 
 def toggle_prediction_logs():
     """Toggle prediction data logging on/off"""
     global show_prediction_logs
     show_prediction_logs = not show_prediction_logs
     status = "ON" if show_prediction_logs else "OFF"
-    print(f"🤖 Prediction logging: {status}", flush=True)
+    fast_log(f"🤖 Prediction logging: {status}")
 
 def print_detailed_sensor_status():
     """Print detailed sensor and system status"""
@@ -570,6 +598,12 @@ def main():
     
     # Start threads
     is_running = True
+    
+    # Start logging thread first
+    log_thread = threading.Thread(target=logging_thread)
+    log_thread.daemon = True
+    log_thread.start()
+    print("✅ Logging thread started")
     
     sensor_thread = threading.Thread(target=sensor_collection_thread)
     sensor_thread.daemon = True
