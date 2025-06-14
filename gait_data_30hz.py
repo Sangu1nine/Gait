@@ -10,6 +10,7 @@ MODIFIED 2025-01-30: 실시간 로그 출력 개선 - 라즈베리파이 콘솔 
 MODIFIED 2025-01-30: 멀티스레드 로깅 시스템 구현 - 큐 기반 전용 로깅 스레드로 성능 개선 및 스레드 경합 방지
 MODIFIED 2025-01-30: 센서 수집 디버깅 개선 - 오류 상세 로그, 수집 상태 모니터링, I2C 초기화 검증 추가
 MODIFIED 2025-01-30: I2C 성능 최적화 - 버스트 읽기(14바이트 한번에), 로그 큐 크기 제한, 디버그 주기 단축
+MODIFIED 2025-01-30: 로그 시스템 성능 최적화 - 로그 파일 분리(RotatingFileHandler), 실시간 진행바, 배치 처리, 버퍼 해제 안내
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
 - 실시간 센서 데이터 로그 출력 (0.2초 주기, 토글 가능)
@@ -34,6 +35,9 @@ from supabase import create_client, Client
 import io
 import csv
 import queue
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
 
 # Global variables
 bus = SMBus(1)
@@ -83,6 +87,11 @@ show_prediction_logs = True  # Flag to control prediction result logging
 LOG_BATCH = 10
 log_queue = queue.Queue(maxsize=1000)  # Increased queue size for batch processing
 logging_active = True
+
+# File logging setup
+file_logger = None
+console_log_count = 0
+last_status_line = ""
 
 # Gait detection variables
 gait_interpreter = None
@@ -177,36 +186,117 @@ def load_models():
     except Exception as e:
         print(f"❌ Fall model loading error: {e}")
 
-def fast_log(message):
-    """Fast logging function using queue"""
+def setup_file_logging():
+    """Setup file logging with rotation"""
+    global file_logger
+    
+    # Create logs directory if not exists
+    os.makedirs("logs", exist_ok=True)
+    
+    # Setup file logger
+    file_logger = logging.getLogger('gait_system')
+    file_logger.setLevel(logging.INFO)
+    
+    # Clear existing handlers
+    file_logger.handlers.clear()
+    
+    # Rotating file handler (10MB per file, keep 5 files)
+    file_handler = RotatingFileHandler(
+        'logs/gait_system.log', 
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5
+    )
+    file_handler.setLevel(logging.INFO)
+    
+    # Formatter for file logs
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    file_logger.addHandler(file_handler)
+    
+    print("✅ File logging setup: logs/gait_system.log")
+
+def fast_log(message, console_summary=False):
+    """Fast logging function - detailed to file, summary to console"""
+    global console_log_count
+    
     if logging_active:
-        try:
-            log_queue.put_nowait(message)
-        except queue.Full:
-            pass  # Drop log if queue is full to avoid blocking
+        # Always log to file
+        if file_logger:
+            file_logger.info(message)
+        
+        # Console output control
+        if console_summary or show_sensor_logs or show_prediction_logs:
+            try:
+                log_queue.put_nowait(message)
+                console_log_count += 1
+            except queue.Full:
+                pass  # Drop log if queue is full to avoid blocking
+
+def update_progress_bar():
+    """Update single-line progress bar"""
+    global last_status_line
+    
+    with sensor_data_lock:
+        buffer_size = len(raw_sensor_buffer)
+    
+    # Create progress bar
+    progress_info = (
+        f"📊 [{buffer_size:4d}] State:{gait_state:8s} | "
+        f"Gait:{latest_gait_probability:.3f} Fall:{latest_fall_probability:.3f} | "
+        f"Logs:{console_log_count:5d} | "
+        f"Sensor:{'ON' if show_sensor_logs else 'OFF'} Pred:{'ON' if show_prediction_logs else 'OFF'}"
+    )
+    
+    # Clear previous line and write new status
+    if last_status_line:
+        sys.stdout.write("\r" + " " * len(last_status_line) + "\r")
+    
+    sys.stdout.write(progress_info)
+    sys.stdout.flush()
+    last_status_line = progress_info
 
 def logging_thread():
-    """Dedicated thread for handling all log output with batch processing"""
+    """Dedicated thread for console logging with progress bar"""
     global logging_active
     batch = []
+    progress_update_count = 0
+    
     while is_running or not log_queue.empty():
         try:
             line = log_queue.get(timeout=0.05)
             batch.append(line)
             if len(batch) >= LOG_BATCH:
+                # Clear progress bar, print batch, update progress bar
+                if last_status_line:
+                    sys.stdout.write("\r" + " " * len(last_status_line) + "\r")
                 print("\n".join(batch), flush=True)
                 batch.clear()
+                update_progress_bar()
             log_queue.task_done()
         except queue.Empty:
             if batch:  # 남은 줄 출력
+                if last_status_line:
+                    sys.stdout.write("\r" + " " * len(last_status_line) + "\r")
                 print("\n".join(batch), flush=True)
                 batch.clear()
+                update_progress_bar()
+            
+            # Update progress bar every few cycles
+            progress_update_count += 1
+            if progress_update_count % 20 == 0:  # Every ~1 second
+                update_progress_bar()
             continue
         except Exception as e:
             if batch:  # 에러 발생 시에도 남은 로그 출력
+                if last_status_line:
+                    sys.stdout.write("\r" + " " * len(last_status_line) + "\r")
                 print("\n".join(batch), flush=True)
                 batch.clear()
             print(f"❌ Logging error: {e}", flush=True)
+            update_progress_bar()
     logging_active = False
 
 def sensor_collection_thread():
@@ -281,7 +371,7 @@ def sensor_collection_thread():
                 if current_log_time - last_log_time >= 1.0:
                     fast_log(f"📊 Frame {frame_count:4d} | "
                             f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
-                            f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}")
+                            f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}", console_summary=True)
                     last_log_time = current_log_time
             
             frame_count += 1
@@ -416,7 +506,7 @@ def gait_detection_thread():
                     # Log prediction results every 10 predictions (~0.3 seconds)
                     if show_prediction_logs and prediction_update_count % 10 == 0:
                         fast_log(f"🤖 Gait Prediction: {gait_probability:.3f} | State: {gait_state} | "
-                                f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}")
+                                f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}", console_summary=True)
                     
                     prediction_update_count += 1
                     
@@ -491,7 +581,7 @@ def fall_detection_thread():
                     
                     # Log prediction results every 10 predictions (~0.3 seconds)
                     if show_prediction_logs and fall_prediction_count % 10 == 0:
-                        fast_log(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}")
+                        fast_log(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}", console_summary=True)
                     
                     fall_prediction_count += 1
                     
@@ -626,9 +716,17 @@ def main():
     """Main execution function"""
     global is_running
     
+    # Check for unbuffered output
+    if not (os.getenv('PYTHONUNBUFFERED') or '-u' in sys.argv):
+        print("⚠️  PERFORMANCE TIP: Run with 'python -u' or set PYTHONUNBUFFERED=1 for better real-time output")
+        time.sleep(2)
+    
     print("=" * 60)
     print("🚶 Gait & Fall Detection System")
     print("=" * 60)
+    
+    # Setup file logging
+    setup_file_logging()
     
     # Initialize Supabase
     if not init_supabase():
@@ -683,9 +781,9 @@ def main():
     print("="*60)
     print(f"📊 Sensor logging: {'ON' if show_sensor_logs else 'OFF'}")
     print(f"🤖 Prediction logging: {'ON' if show_prediction_logs else 'OFF'}")
-    print("\nSystem running... (enter commands above)")
-    print("TIP: Sensor data logs appear every 1 second when logging is ON")
-    print("TIP: Prediction results appear every 0.3 seconds when logging is ON\n")
+    print("📁 Detailed logs: logs/gait_system.log (use 'tail -f logs/gait_system.log' for real-time)")
+    print("\nSystem running with real-time progress bar...")
+    print("TIP: All detailed data is logged to file, console shows summary + progress bar\n")
     
     # Start input handling thread for Windows compatibility
     def input_handler():
@@ -712,11 +810,8 @@ def main():
         while True:
             time.sleep(1)
             
-            # Print basic status every 10 seconds (only if sensor logging is off)
-            if not show_sensor_logs and int(time.time()) % 10 == 0:
-                with sensor_data_lock:
-                    buffer_size = len(raw_sensor_buffer)
-                print(f"📊 Status - Buffer: {buffer_size}, State: {gait_state}")
+            # Progress bar handles all status display now
+            pass
                 
     except KeyboardInterrupt:
         print("\n🛑 Stopping system...")
@@ -731,7 +826,13 @@ def main():
                 save_gait_data_to_supabase(current_gait_data)
         
         bus.close()
+        
+        # Clear progress bar and print final status
+        if last_status_line:
+            sys.stdout.write("\r" + " " * len(last_status_line) + "\r")
+        
         print("✅ System stopped")
+        print(f"📁 Full logs saved to: logs/gait_system.log")
 
 if __name__ == "__main__":
     main()
