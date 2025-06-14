@@ -3,12 +3,14 @@ GAIT Detection IMU Sensor Data Collection Program (30Hz)
 Created: 2025-01-29
 Modified: 2025-01-29 - Added gait detection functionality
 MODIFIED 2025-01-29: Changed all log messages from Korean to English - for international compatibility
+MODIFIED 2025-01-29: Added Walking-Bout Segmentation Logic - implements state-based bout detection
 
 Features:
 - IMU sensor data collection at 30Hz
 - Real-time gait detection using Stage1 TensorFlow Lite model
-- WiFi data transmission only during gait detection
-- Save all data to CSV file (including gait/non-gait classification)
+- Walking-Bout Segmentation Logic (IDLE → WALKING → POST-WALK)
+- WiFi data transmission only during WALKING state
+- Save data to separate CSV files for each walking bout
 """
 
 from smbus2 import SMBus
@@ -55,6 +57,16 @@ WINDOW_SIZE = 60  # Window size for Stage1 model
 TARGET_HZ = 30   # Sampling rate
 GAIT_THRESHOLD = 0.2  # Gait detection threshold (default value)
 
+# Walking-Bout Segmentation parameters
+N1 = 60  # Minimum consecutive gait frames to start walking (≈ 2s @30Hz)
+N2 = 60  # Minimum consecutive non-gait frames to end walking (≈ 2s @30Hz)
+THETA = 0.20  # Gait probability threshold
+
+# Walking-Bout Segmentation states
+IDLE = "IDLE"
+WALKING = "WALKING"
+POST_WALK = "POST_WALK"
+
 # Gait detection global variables
 interpreter = None
 minmax_scaler = None
@@ -63,6 +75,15 @@ gait_detection_enabled = False
 last_gait_status = "non_gait"
 gait_count = 0
 non_gait_count = 0
+
+# Walking-Bout Segmentation global variables
+current_state = IDLE
+consecutive_gait_frames = 0
+consecutive_non_gait_frames = 0
+current_bout_data = []
+bout_counter = 0
+current_csv_filename = None
+bout_start_time = None
 
 def read_data(register):
     """Read data from IMU register"""
@@ -121,7 +142,7 @@ def predict_gait(sensor_data):
     global interpreter, minmax_scaler, last_gait_status
     
     if not gait_detection_enabled or len(sensor_data) != WINDOW_SIZE:
-        return "unknown"
+        return "unknown", 0.0
     
     try:
         # Data preprocessing (refer to stage1_preprocessing.py)
@@ -148,11 +169,11 @@ def predict_gait(sensor_data):
         predicted_class = "gait" if gait_probability > GAIT_THRESHOLD else "non_gait"
         
         last_gait_status = predicted_class
-        return predicted_class
+        return predicted_class, float(gait_probability)
         
     except Exception as e:
         print(f"⚠️  Gait detection error: {str(e)}")
-        return "unknown"
+        return "unknown", 0.0
 
 def connect_wifi():
     """Setup WiFi connection"""
@@ -203,12 +224,101 @@ def close_wifi():
             pass
     wifi_connected = False
 
+def start_new_bout():
+    """Start a new walking bout"""
+    global current_bout_data, bout_counter, current_csv_filename, bout_start_time
+    
+    bout_counter += 1
+    current_bout_data = []
+    bout_start_time = time.time()
+    
+    # Generate filename for current bout
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    current_csv_filename = f"walking_bout_{bout_counter:03d}_{timestamp}.csv"
+    
+    print(f"🚶 Walking bout {bout_counter} started - File: {current_csv_filename}")
+
+def save_current_bout():
+    """Save current walking bout to CSV file"""
+    global current_bout_data, current_csv_filename, bout_start_time
+    
+    if len(current_bout_data) > 0 and current_csv_filename:
+        # Create dataframe and save
+        columns = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ', 'Timestamp', 'GaitStatus']
+        df = pd.DataFrame(current_bout_data, columns=columns)
+        df.to_csv(current_csv_filename, index=False)
+        
+        # Calculate bout statistics
+        bout_duration = time.time() - bout_start_time if bout_start_time else 0
+        gait_frames = sum(1 for row in current_bout_data if row[7] == "gait")
+        total_frames = len(current_bout_data)
+        gait_percentage = (gait_frames / total_frames * 100) if total_frames > 0 else 0
+        
+        print(f"💾 Walking bout {bout_counter} saved:")
+        print(f"   📄 File: {current_csv_filename}")
+        print(f"   ⏱️  Duration: {bout_duration:.2f}s")
+        print(f"   📊 Total frames: {total_frames}")
+        print(f"   🚶 Gait frames: {gait_frames} ({gait_percentage:.1f}%)")
+        
+        # Reset bout data
+        current_bout_data = []
+        current_csv_filename = None
+        bout_start_time = None
+
+def update_walking_bout_state(gait_status, gait_probability):
+    """Update walking-bout segmentation state"""
+    global current_state, consecutive_gait_frames, consecutive_non_gait_frames
+    
+    # Update consecutive frame counters
+    if gait_status == "gait":
+        consecutive_gait_frames += 1
+        consecutive_non_gait_frames = 0
+    elif gait_status == "non_gait":
+        consecutive_non_gait_frames += 1
+        consecutive_gait_frames = 0
+    else:
+        # Unknown status - don't change counters
+        return current_state, False
+    
+    previous_state = current_state
+    should_transmit = False
+    
+    # State transition logic
+    if current_state == IDLE:
+        # IDLE → WALKING: N1 consecutive gait frames
+        if consecutive_gait_frames >= N1:
+            current_state = WALKING
+            start_new_bout()
+            should_transmit = True
+            print(f"🔄 State change: {previous_state} → {current_state}")
+    
+    elif current_state == WALKING:
+        # Continue transmission if gait probability > threshold
+        if gait_probability > THETA:
+            should_transmit = True
+        
+        # WALKING → POST_WALK: N2 consecutive non-gait frames
+        if consecutive_non_gait_frames >= N2:
+            current_state = POST_WALK
+            print(f"🔄 State change: {previous_state} → {current_state}")
+    
+    elif current_state == POST_WALK:
+        # POST_WALK → IDLE: save current bout and return to idle
+        save_current_bout()
+        current_state = IDLE
+        consecutive_gait_frames = 0
+        consecutive_non_gait_frames = 0
+        print(f"🔄 State change: {previous_state} → {current_state}")
+    
+    return current_state, should_transmit
+
 def main():
     """Main execution function"""
-    global sensor_buffer, gait_count, non_gait_count
+    global sensor_buffer, gait_count, non_gait_count, current_bout_data
     
     print("=" * 60)
     print("🚶 GAIT Detection IMU Sensor Data Collection Program (30Hz)")
+    print("📊 Walking-Bout Segmentation Logic Enabled")
     print("=" * 60)
     
     # Load gait detection model
@@ -218,16 +328,15 @@ def main():
     # Initialize sensor
     bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
     
-    # Prepare data frame
-    columns = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ', 'Timestamp', 'GaitStatus']
-    data = []
-    
-    # Set filename (based on current time)
+    # Set base filename for logging (all sensor data)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"gait_imu_data_{timestamp}.csv"
+    log_filename = f"gait_log_all_data_{timestamp}.csv"
+    all_data = []  # Store all data for logging
     
-    print(f"📄 Data save file: {filename}")
+    print(f"📄 Complete data log file: {log_filename}")
     print(f"🎯 Gait detection threshold: {GAIT_THRESHOLD}")
+    print(f"📊 Walking-Bout parameters: N1={N1}, N2={N2}, θ={THETA}")
+    print(f"🔄 Initial state: {current_state}")
     print("Press Ctrl+C to stop collection")
     
     # Attempt WiFi connection
@@ -264,8 +373,9 @@ def main():
             
             # Gait detection (when buffer is sufficiently filled)
             gait_status = "unknown"
+            gait_probability = 0.0
             if len(sensor_buffer) == WINDOW_SIZE:
-                gait_status = predict_gait(list(sensor_buffer))
+                gait_status, gait_probability = predict_gait(list(sensor_buffer))
                 
                 # Update statistics
                 if gait_status == "gait":
@@ -273,18 +383,27 @@ def main():
                 elif gait_status == "non_gait":
                     non_gait_count += 1
                 
-                # WiFi transmission only during gait detection
-                if gait_status == "gait" and wifi_connected:
+                # Update walking-bout state and determine transmission
+                state, should_transmit = update_walking_bout_state(gait_status, gait_probability)
+                
+                # WiFi transmission based on walking-bout state
+                if should_transmit and wifi_connected:
                     sensor_data_wifi = {
                         'timestamp': elapsed,
                         'accel': {'x': accel_x, 'y': -accel_y, 'z': accel_z},  # Y-axis inverted
                         'gyro': {'x': gyro_x, 'y': -gyro_y, 'z': gyro_z},      # Y-axis inverted
-                        'gait_status': gait_status
+                        'gait_status': gait_status,
+                        'bout_state': state,
+                        'bout_number': bout_counter
                     }
                     send_data_queue.append(sensor_data_wifi)
+                
+                # Add to current bout data if in WALKING state
+                if current_state == WALKING:
+                    current_bout_data.append([accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, elapsed, gait_status])
             
-            # Save all data to CSV (including gait status)
-            data.append([accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, elapsed, gait_status])
+            # Save all data to complete log (including gait status and state)
+            all_data.append([accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, elapsed, gait_status, current_state])
             sample_count += 1
             
             # Output progress every 30 samples
@@ -296,8 +415,11 @@ def main():
                 print(f"🏃 Acceleration(m/s²): X={accel_x:.2f}, Y={accel_y:.2f}, Z={accel_z:.2f}")
                 print(f"🔄 Gyroscope(°/s): X={gyro_x:.2f}, Y={gyro_y:.2f}, Z={gyro_z:.2f}")
                 print(f"🚶 Gait status: {gait_status} (Gait ratio: {gait_percentage:.1f}%)")
+                print(f"🔄 Walking-Bout State: {current_state}")
+                print(f"   📊 Consecutive gait: {consecutive_gait_frames}, non-gait: {consecutive_non_gait_frames}")
+                print(f"   📄 Current bout: {bout_counter}, bout frames: {len(current_bout_data)}")
                 if wifi_connected:
-                    transmitted = "Transmitted" if gait_status == "gait" else "Not transmitted"
+                    transmitted = "Transmitted" if current_state == WALKING and len(sensor_buffer) == WINDOW_SIZE else "Not transmitted"
                     print(f"📡 WiFi: Connected, Queue length: {len(send_data_queue)}, Status: {transmitted}")
                 else:
                     print("📡 WiFi: Not connected")
@@ -317,20 +439,27 @@ def main():
         print(f"\n❌ Error occurred: {str(e)}")
         
     finally:
-        # Create and save dataframe
-        df = pd.DataFrame(data, columns=columns)
-        df.to_csv(filename, index=False)
+        # Save any remaining bout data
+        if current_state == WALKING and len(current_bout_data) > 0:
+            save_current_bout()
+        
+        # Create and save complete log dataframe
+        columns = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ', 'Timestamp', 'GaitStatus', 'BoutState']
+        df_all = pd.DataFrame(all_data, columns=columns)
+        df_all.to_csv(log_filename, index=False)
         
         # Output final statistics
-        total_samples = len(df)
+        total_samples = len(df_all)
         total_predictions = gait_count + non_gait_count
         gait_percentage = (gait_count / total_predictions * 100) if total_predictions > 0 else 0
         
         print("=" * 60)
         print("📊 Collection Complete Statistics")
         print("=" * 60)
-        print(f"📄 Saved file: {filename}")
+        print(f"📄 Complete log file: {log_filename}")
         print(f"📈 Total samples: {total_samples}")
+        print(f"🚶 Total walking bouts detected: {bout_counter}")
+        print(f"🔄 Final state: {current_state}")
         print(f"🚶 Gait detected: {gait_count} times ({gait_percentage:.1f}%)")
         print(f"🏃 Non-gait detected: {non_gait_count} times ({100-gait_percentage:.1f}%)")
         print(f"⏱️  Total collection time: {elapsed:.2f}s")
