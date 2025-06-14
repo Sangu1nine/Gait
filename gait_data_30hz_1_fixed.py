@@ -192,6 +192,9 @@ def sensor_collection_thread():
             }
             
             with sensor_data_lock:
+                # 버퍼가 가득 찼을 때 오래된 데이터 제거
+                if len(raw_sensor_buffer) >= raw_sensor_buffer.maxlen:
+                    raw_sensor_buffer.popleft()
                 raw_sensor_buffer.append(sensor_data)
             
             frame_count += 1
@@ -447,17 +450,37 @@ def save_gait_data_to_supabase(gait_data):
         csv_content = output.getvalue()
         csv_bytes = csv_content.encode('utf-8')
         
-        # Upload to Supabase Storage
-        response = supabase.storage.from_('gait-data').upload(
-            file=csv_bytes,
-            path=filename,
-            file_options={"content-type": "text/csv"}
-        )
+        # Upload to Supabase Storage with retry mechanism
+        max_retries = 3
+        retry_delay = 1  # seconds
         
-        print(f"✅ Gait data saved: {filename} ({len(gait_data)} frames)")
+        for attempt in range(max_retries):
+            try:
+                response = supabase.storage.from_('gait-data').upload(
+                    file=csv_bytes,
+                    path=filename,
+                    file_options={"content-type": "text/csv"}
+                )
+                print(f"✅ Gait data saved: {filename} ({len(gait_data)} frames)")
+                return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️ Upload attempt {attempt + 1} failed: {e}. Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    raise e
         
     except Exception as e:
         print(f"❌ Failed to save gait data: {e}")
+        # Save to local file as backup
+        try:
+            backup_filename = f"backup_{filename}"
+            with open(backup_filename, 'w') as f:
+                f.write(csv_content)
+            print(f"✅ Backup saved to local file: {backup_filename}")
+        except Exception as backup_e:
+            print(f"❌ Failed to save backup: {backup_e}")
 
 def save_fall_event_to_supabase(timestamp):
     """Save fall event to Supabase database"""
