@@ -4,13 +4,16 @@ Created: 2025-01-30
 MODIFIED 2025-01-30: 실시간 센서 데이터 로그 출력 기능 추가
 MODIFIED 2025-01-30: 낙상 감지 모델 윈도우 크기 수정 (60 → 150 프레임)
 MODIFIED 2025-01-30: Y축 부호 처리 중복 제거 (센서 수집에서만 처리)
+MODIFIED 2025-01-30: 실시간 모델 예측 결과 로그 출력 기능 추가 - 센서 로그 주기 단축 (0.5초 → 0.2초), 예측 결과 로그 (0.3초 주기), 키보드 제어 추가
+MODIFIED 2025-01-30: 낙상 감지 스케일러 실제 적용 - 각 센서 채널별로 MinMax/Standard 스케일러 적용 구현
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
-- 실시간 센서 데이터 로그 출력 (토글 가능)
+- 실시간 센서 데이터 로그 출력 (0.2초 주기, 토글 가능)
+- 실시간 모델 예측 결과 로그 출력 (0.3초 주기, 토글 가능)
 - 실시간 보행 감지 (TensorFlow Lite, 60 프레임)
 - 실시간 낙상 감지 (TensorFlow Lite, 150 프레임)
 - Supabase 직접 업로드
-- 키보드 제어: 's' (로그 토글), 'd' (상세 상태)
+- 키보드 제어: 's' (센서 로그), 'p' (예측 로그), 'd' (상세 상태)
 """
 
 from smbus2 import SMBus
@@ -69,6 +72,7 @@ sensor_data_lock = threading.Lock()
 raw_sensor_buffer = deque(maxlen=max(GAIT_WINDOW_SIZE, FALL_WINDOW_SIZE) * 10)  # Store more for CSV saving
 is_running = False
 show_sensor_logs = True  # Flag to control sensor data logging
+show_prediction_logs = True  # Flag to control prediction result logging
 
 # Gait detection variables
 gait_interpreter = None
@@ -82,6 +86,11 @@ current_gait_data = []
 # Fall detection variables
 fall_interpreter = None
 fall_scalers = {}  # Dictionary for multiple scalers
+
+# Prediction result variables
+latest_gait_probability = 0.0
+latest_fall_probability = 0.0
+prediction_update_count = 0
 
 def read_data(register):
     """Read data from IMU register"""
@@ -197,10 +206,10 @@ def sensor_collection_thread():
             with sensor_data_lock:
                 raw_sensor_buffer.append(sensor_data)
             
-            # Log sensor data every 0.5 seconds (15 frames at 30Hz)
-            if show_sensor_logs and frame_count % 15 == 0:
+            # Log sensor data every 0.2 seconds (6 frames at 30Hz)
+            if show_sensor_logs and frame_count % 6 == 0:
                 current_log_time = time.time()
-                if current_log_time - last_log_time >= 0.5:
+                if current_log_time - last_log_time >= 0.2:
                     print(f"📊 Frame {frame_count:4d} | "
                           f"Acc: X={accel_x:6.2f} Y={accel_y:6.2f} Z={accel_z:6.2f} | "
                           f"Gyro: X={gyro_x:7.2f} Y={gyro_y:7.2f} Z={gyro_z:7.2f}")
@@ -265,14 +274,34 @@ def preprocess_for_fall(sensor_window):
             
             processed_data.append([acc_x, acc_y, acc_z, gyr_x, gyr_y, gyr_z])
         
-        # Apply fall-specific scaling
-        # Note: You may need to adjust this based on your fall model's requirements
+        # Convert to numpy array
         sensor_array = np.array(processed_data, dtype=np.float32)
         
-        # Apply scalers for each channel if needed
-        # This depends on your fall detection model's preprocessing
+        # Apply fall-specific scaling for each sensor channel
+        sensor_names = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ']
+        scaled_data = np.zeros_like(sensor_array)
         
-        return sensor_array.reshape(1, FALL_WINDOW_SIZE, 6)
+        for i, sensor_name in enumerate(sensor_names):
+            # Try to use MinMax scaler first, then Standard scaler if available
+            minmax_key = f"{sensor_name}_minmax"
+            standard_key = f"{sensor_name}_standard"
+            
+            if minmax_key in fall_scalers:
+                # Apply MinMax scaling
+                sensor_column = sensor_array[:, i].reshape(-1, 1)
+                scaled_column = fall_scalers[minmax_key].transform(sensor_column)
+                scaled_data[:, i] = scaled_column.flatten()
+            elif standard_key in fall_scalers:
+                # Apply Standard scaling
+                sensor_column = sensor_array[:, i].reshape(-1, 1)
+                scaled_column = fall_scalers[standard_key].transform(sensor_column)
+                scaled_data[:, i] = scaled_column.flatten()
+            else:
+                # No scaler available, use original data
+                scaled_data[:, i] = sensor_array[:, i]
+                print(f"⚠️ No scaler found for {sensor_name}, using original data")
+        
+        return scaled_data.reshape(1, FALL_WINDOW_SIZE, 6)
     except Exception as e:
         print(f"❌ Fall preprocessing error: {e}")
         return None
@@ -281,6 +310,7 @@ def gait_detection_thread():
     """Thread for gait detection"""
     global gait_state, gait_frame_count, non_gait_frame_count
     global current_gait_start_frame, current_gait_data
+    global latest_gait_probability, prediction_update_count
     
     while is_running:
         try:
@@ -305,6 +335,16 @@ def gait_detection_thread():
                     
                     prediction = gait_interpreter.get_tensor(output_details[0]['index'])
                     gait_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
+                    
+                    # Update global prediction value
+                    latest_gait_probability = gait_probability
+                    
+                    # Log prediction results every 10 predictions (~0.3 seconds)
+                    if show_prediction_logs and prediction_update_count % 10 == 0:
+                        print(f"🤖 Gait Prediction: {gait_probability:.3f} | State: {gait_state} | "
+                              f"Gait frames: {gait_frame_count} | Non-gait frames: {non_gait_frame_count}")
+                    
+                    prediction_update_count += 1
                     
                     # Update frame counts
                     if gait_probability > GAIT_THRESHOLD:
@@ -346,6 +386,9 @@ def gait_detection_thread():
 
 def fall_detection_thread():
     """Thread for fall detection"""
+    global latest_fall_probability
+    fall_prediction_count = 0
+    
     while is_running:
         try:
             with sensor_data_lock:
@@ -368,6 +411,15 @@ def fall_detection_thread():
                     
                     prediction = fall_interpreter.get_tensor(output_details[0]['index'])
                     fall_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
+                    
+                    # Update global prediction value
+                    latest_fall_probability = fall_probability
+                    
+                    # Log prediction results every 10 predictions (~0.3 seconds)
+                    if show_prediction_logs and fall_prediction_count % 10 == 0:
+                        print(f"🚨 Fall Prediction: {fall_probability:.3f} | Threshold: {FALL_THRESHOLD}")
+                    
+                    fall_prediction_count += 1
                     
                     # Check for fall
                     if fall_probability > FALL_THRESHOLD:
@@ -455,6 +507,13 @@ def toggle_sensor_logs():
     status = "ON" if show_sensor_logs else "OFF"
     print(f"📊 Sensor logging: {status}")
 
+def toggle_prediction_logs():
+    """Toggle prediction data logging on/off"""
+    global show_prediction_logs
+    show_prediction_logs = not show_prediction_logs
+    status = "ON" if show_prediction_logs else "OFF"
+    print(f"🤖 Prediction logging: {status}")
+
 def print_detailed_sensor_status():
     """Print detailed sensor and system status"""
     with sensor_data_lock:
@@ -470,6 +529,7 @@ def print_detailed_sensor_status():
             print(f"Buffer Size: {buffer_size}/{max(GAIT_WINDOW_SIZE, FALL_WINDOW_SIZE) * 10}")
             print(f"Gait State: {gait_state}")
             print(f"Sensor Logging: {'ON' if show_sensor_logs else 'OFF'}")
+            print(f"Prediction Logging: {'ON' if show_prediction_logs else 'OFF'}")
             print("-" * 80)
             print("ACCELEROMETER (m/s²):")
             print(f"  X: {latest_data['accel_x']:8.3f}")
@@ -480,6 +540,10 @@ def print_detailed_sensor_status():
             print(f"  X: {latest_data['gyro_x']:8.3f}")
             print(f"  Y: {latest_data['gyro_y']:8.3f}")
             print(f"  Z: {latest_data['gyro_z']:8.3f}")
+            print("-" * 80)
+            print("MODEL PREDICTIONS:")
+            print(f"  Gait Probability: {latest_gait_probability:.3f}")
+            print(f"  Fall Probability: {latest_fall_probability:.3f}")
             print("="*80)
         else:
             print("❌ No sensor data available")
@@ -524,12 +588,15 @@ def main():
     print("\n" + "="*60)
     print("⌨️  CONTROL COMMANDS:")
     print("   Enter 's' and press Enter: Toggle sensor data logging")
+    print("   Enter 'p' and press Enter: Toggle prediction data logging")
     print("   Enter 'd' and press Enter: Show detailed sensor status")
     print("   Ctrl+C: Stop system")
     print("="*60)
     print(f"📊 Sensor logging: {'ON' if show_sensor_logs else 'OFF'}")
+    print(f"🤖 Prediction logging: {'ON' if show_prediction_logs else 'OFF'}")
     print("\nSystem running... (enter commands above)")
-    print("TIP: Sensor data logs appear every 0.5 seconds when logging is ON\n")
+    print("TIP: Sensor data logs appear every 0.2 seconds when logging is ON")
+    print("TIP: Prediction results appear every 0.3 seconds when logging is ON\n")
     
     # Start input handling thread for Windows compatibility
     def input_handler():
@@ -539,10 +606,12 @@ def main():
                 user_input = input().strip().lower()
                 if user_input == 's':
                     toggle_sensor_logs()
+                elif user_input == 'p':
+                    toggle_prediction_logs()
                 elif user_input == 'd':
                     print_detailed_sensor_status()
                 elif user_input == 'h' or user_input == 'help':
-                    print("\n⌨️  Available commands: 's' (toggle logs), 'd' (detailed status)\n")
+                    print("\n⌨️  Available commands: 's' (toggle sensor logs), 'p' (toggle prediction logs), 'd' (detailed status)\n")
             except:
                 break
     
