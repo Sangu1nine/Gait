@@ -65,9 +65,8 @@ class RealSensorClient:
     
     def get_sensor_data(self):
         """Read sensor data"""
-        # Calculate timestamp based on current time
-        current_time = time.time()
-        sync_timestamp = round((current_time - self.start_time), 3)
+        # Calculate timestamp based on frame number for consistent 30Hz timing
+        sync_timestamp = round(self.frame_number * 0.033, 3)
         
         if self.mpu is not None:
             try:
@@ -114,7 +113,7 @@ class RealSensorClient:
             return json.dumps(sensor_data)
         elif self.output_format == "csv":
             csv_data = [
-                sensor_data["frame_number"],
+                str(sensor_data["frame_number"]),
                 f"{sensor_data['sync_timestamp']:.3f}",
                 f"{sensor_data['accel_x']:.3f}",
                 f"{sensor_data['accel_y']:.3f}",
@@ -189,7 +188,7 @@ def main():
             output_format = sys.argv[1].lower()
     
     print(f"Raspberry Pi Sensor Data Transmission Client")
-    print(f"Server Address: 172.30.1.93:8765")
+    print(f"Server Address: 172.20.10.12:8765")
     print(f"Output Format: {output_format.upper()}")
     print(f"Press Ctrl+C to exit.")
     print("-" * 50)
