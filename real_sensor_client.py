@@ -73,19 +73,33 @@ class RealSensorClient:
                 self.bus = SMBus(1)
                 # 센서 초기화 (get_data_100hz.py에서 가져옴)
                 self.bus.write_byte_data(self.DEV_ADDR, 0x6B, 0b00000000)
-                self.logger.info("MPU6050 sensor initialization completed (smbus2)")
+                time.sleep(0.1)  # 센서 초기화 대기
+                
+                # 센서 연결 테스트
+                test_val = self.bus.read_byte_data(self.DEV_ADDR, 0x75)  # WHO_AM_I 레지스터
+                if test_val == 0x68:
+                    self.logger.info("MPU6050 sensor initialization completed (smbus2)")
+                else:
+                    self.logger.warning(f"Sensor WHO_AM_I test: expected 0x68, got 0x{test_val:02x}")
+                    
             except Exception as e:
                 self.logger.error(f"Sensor initialization failed: {e}")
                 self.bus = None
         else:
             self.bus = None
     
-    def read_data(self, register):
-        """레지스터에서 16비트 데이터 읽기 (get_data_100hz.py에서 가져옴)"""
-        high = self.bus.read_byte_data(self.DEV_ADDR, register)
-        low = self.bus.read_byte_data(self.DEV_ADDR, register + 1)
-        val = (high << 8) + low
-        return val
+    def read_data(self, register, retry_count=3):
+        """레지스터에서 16비트 데이터 읽기 (재시도 로직 포함)"""
+        for attempt in range(retry_count):
+            try:
+                high = self.bus.read_byte_data(self.DEV_ADDR, register)
+                low = self.bus.read_byte_data(self.DEV_ADDR, register + 1)
+                val = (high << 8) + low
+                return val
+            except Exception as e:
+                if attempt == retry_count - 1:  # 마지막 시도
+                    raise e
+                time.sleep(0.001)  # 1ms 대기 후 재시도
     
     def twocomplements(self, val):
         """2의 보수 변환 (get_data_100hz.py에서 가져옴)"""
@@ -106,20 +120,26 @@ class RealSensorClient:
         sync_timestamp = round(self.frame_number * 0.033, 3)
         
         if self.bus is not None:
-            try:
-                # Read actual sensor data using smbus2 method
-                accel_x = round(self.accel_g(self.read_data(self.register_accel_xout_h)), 3)
-                accel_y = round(self.accel_g(self.read_data(self.register_accel_yout_h)), 3)
-                accel_z = round(self.accel_g(self.read_data(self.register_accel_zout_h)), 3)
-                gyro_x = round(self.gyro_dps(self.read_data(self.register_gyro_xout_h)), 5)
-                gyro_y = round(self.gyro_dps(self.read_data(self.register_gyro_yout_h)), 5)
-                gyro_z = round(self.gyro_dps(self.read_data(self.register_gyro_zout_h)), 5)
-                
-            except Exception as e:
-                self.logger.error(f"Failed to read sensor data: {e}")
-                # Use default values on error
-                accel_x, accel_y, accel_z = 0.0, 9.8, 0.0
-                gyro_x, gyro_y, gyro_z = 0.0, 0.0, 0.0
+            max_retries = 2
+            for retry in range(max_retries):
+                try:
+                    # Read actual sensor data using smbus2 method
+                    accel_x = round(self.accel_g(self.read_data(self.register_accel_xout_h)), 3)
+                    accel_y = round(self.accel_g(self.read_data(self.register_accel_yout_h)), 3)
+                    accel_z = round(self.accel_g(self.read_data(self.register_accel_zout_h)), 3)
+                    gyro_x = round(self.gyro_dps(self.read_data(self.register_gyro_xout_h)), 5)
+                    gyro_y = round(self.gyro_dps(self.read_data(self.register_gyro_yout_h)), 5)
+                    gyro_z = round(self.gyro_dps(self.read_data(self.register_gyro_zout_h)), 5)
+                    break  # 성공하면 루프 종료
+                    
+                except Exception as e:
+                    if retry == max_retries - 1:  # 마지막 재시도
+                        self.logger.error(f"Failed to read sensor data after {max_retries} attempts: {e}")
+                        # Use default values on error
+                        accel_x, accel_y, accel_z = 0.0, 9.8, 0.0
+                        gyro_x, gyro_y, gyro_z = 0.0, 0.0, 0.0
+                    else:
+                        time.sleep(0.005)  # 5ms 대기 후 재시도
         else:
             # Simulation data
             import random
