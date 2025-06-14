@@ -1,5 +1,5 @@
 {
-  "timestamp": "20250614_193753",
+  "timestamp": "20250614_233510",
   "python_version": "3.9+",
   "numpy_version": "1.23.5+",
   "tensorflow_version": "2.10.0+",
@@ -7,7 +7,7 @@
   "n_walking_subjects": 4,
   "n_non_walking_subjects": 32,
   "stage1_shape": [
-    10667,
+    13469,
     60,
     6
   ],
@@ -53,11 +53,11 @@
   ],
   "stage1_label_distribution": {
     "gait": 5033,
-    "non_gait": 5634
+    "non_gait": 8436
   },
   "total_files_processed": {
     "walking": 317,
-    "non_walking": 664
+    "non_walking": 760
   },
   "data_types": {
     "stage1_data": "float32",
