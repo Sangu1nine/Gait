@@ -1,32 +1,26 @@
 """
-GAIT Detection IMU Sensor Data Collection Program (30Hz)
-Created: 2025-01-29
-Modified: 2025-01-29 - Added gait detection functionality
-MODIFIED 2025-01-29: Changed all log messages from Korean to English - for international compatibility
-MODIFIED 2025-01-29: Added Walking-Bout Segmentation Logic - implements state-based bout detection
-
+보행 및 낙상 감지 IMU 센서 데이터 수집 프로그램
+Created: 2025-01-30
 Features:
-- IMU sensor data collection at 30Hz
-- Real-time gait detection using Stage1 TensorFlow Lite model
-- Walking-Bout Segmentation Logic (IDLE → WALKING → POST-WALK)
-- WiFi data transmission only during WALKING state
-- Save data to separate CSV files for each walking bout
+- 30Hz IMU 센서 데이터 수집 (멀티스레드)
+- 실시간 보행 감지 (TensorFlow Lite)
+- 실시간 낙상 감지 (TensorFlow Lite)
+- Supabase 직접 업로드
 """
 
 from smbus2 import SMBus
 from bitstring import Bits
 import os
-import math
 import time
-import pandas as pd
 import datetime
 import numpy as np
-import socket
-import json
 import threading
 import pickle
 from collections import deque
 import tensorflow as tf
+from supabase import create_client, Client
+import io
+import csv
 
 # Global variables
 bus = SMBus(1)
@@ -43,47 +37,44 @@ register_accel_yout_h = 0x3D
 register_accel_zout_h = 0x3F
 sensitive_accel = 16384.0
 
-# WiFi communication settings
-WIFI_SERVER_IP = '172.20.10.12'  # Local PC IP address (modified)
-WIFI_SERVER_PORT = 5000  # Communication port
-wifi_client = None
-wifi_connected = False
-send_data_queue = []
+# Model paths
+GAIT_MODEL_PATH = "models/gait_detection/model.tflite"
+FALL_MODEL_PATH = "models/fall_detection/fall_detection.tflite"
+GAIT_SCALER_PATH = "scalers/gait_detection"
+FALL_SCALER_PATH = "scalers/fall_detection"
 
-# Gait detection related settings
-MODEL_PATH = "models/gait_detection/model.tflite"
-SCALER_PATH = "scalers/gait_detection"  # Directory containing scaler file
-WINDOW_SIZE = 60  # Window size for Stage1 model
+# Detection parameters
+WINDOW_SIZE = 60  # Window size for models
 TARGET_HZ = 30   # Sampling rate
-GAIT_THRESHOLD = 0.5  # Gait detection threshold (default value)
+GAIT_THRESHOLD = 0.5  # Gait detection threshold
+FALL_THRESHOLD = 0.5  # Fall detection threshold
 
-# Walking-Bout Segmentation parameters
-N1 = 60  # Minimum consecutive gait frames to start walking (≈ 2s @30Hz)
-N2 = 60  # Minimum consecutive non-gait frames to end walking (≈ 2s @30Hz)
-# Note: Using GAIT_THRESHOLD (0.2) for gait probability threshold
+# State transition parameters
+GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
+MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
-# Walking-Bout Segmentation states
-IDLE = "IDLE"
-WALKING = "WALKING"
-POST_WALK = "POST_WALK"
+# Supabase configuration
+SUPABASE_URL = "YOUR_SUPABASE_URL"  # Replace with your Supabase URL
+SUPABASE_KEY = "YOUR_SUPABASE_KEY"  # Replace with your Supabase key
+supabase: Client = None
 
-# Gait detection global variables
-interpreter = None
-minmax_scaler = None
-sensor_buffer = deque(maxlen=WINDOW_SIZE)
-gait_detection_enabled = False
-last_gait_status = "non_gait"
-gait_count = 0
-non_gait_count = 0
+# Global variables for sensor data collection
+sensor_data_lock = threading.Lock()
+raw_sensor_buffer = deque(maxlen=WINDOW_SIZE * 10)  # Store more for CSV saving
+is_running = False
 
-# Walking-Bout Segmentation global variables
-current_state = IDLE
-consecutive_gait_frames = 0
-consecutive_non_gait_frames = 0
-current_bout_data = []
-bout_counter = 0
-current_csv_filename = None
-bout_start_time = None
+# Gait detection variables
+gait_interpreter = None
+gait_scaler = None
+gait_state = "non-gait"
+gait_frame_count = 0
+non_gait_frame_count = 0
+current_gait_start_frame = None
+current_gait_data = []
+
+# Fall detection variables
+fall_interpreter = None
+fall_scalers = {}  # Dictionary for multiple scalers
 
 def read_data(register):
     """Read data from IMU register"""
@@ -105,257 +96,70 @@ def accel_ms2(val):
     """Convert acceleration value to m/s²"""
     return (twocomplements(val)/sensitive_accel) * 9.80665
 
-def load_gait_detection_model():
-    """Load gait detection model and scaler"""
-    global interpreter, minmax_scaler, gait_detection_enabled
-    
+def init_supabase():
+    """Initialize Supabase client"""
+    global supabase
     try:
-        # Load TensorFlow Lite model
-        if os.path.exists(MODEL_PATH):
-            interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
-            interpreter.allocate_tensors()
-            print(f"✅ TFLite model loaded successfully: {MODEL_PATH}")
-        else:
-            print(f"❌ Model file not found: {MODEL_PATH}")
-            return False
-        
-        # Load MinMax scaler
-        scaler_file = os.path.join(SCALER_PATH, "minmax_scaler.pkl")
-        if os.path.exists(scaler_file):
-            with open(scaler_file, 'rb') as f:
-                minmax_scaler = pickle.load(f)
-            print(f"✅ MinMax scaler loaded successfully: {scaler_file}")
-        else:
-            print(f"❌ Scaler file not found: {scaler_file}")
-            return False
-        
-        gait_detection_enabled = True
-        print("🚶 Gait detection system activated")
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print("✅ Supabase initialized successfully")
         return True
-        
     except Exception as e:
-        print(f"❌ Model loading error: {str(e)}")
+        print(f"❌ Supabase initialization failed: {e}")
         return False
 
-def predict_gait(sensor_data):
-    """Predict gait detection from sensor data"""
-    global interpreter, minmax_scaler, last_gait_status
-    
-    if not gait_detection_enabled or len(sensor_data) != WINDOW_SIZE:
-        return "unknown", 0.0
-    
-    try:
-        # Data preprocessing (refer to stage1_preprocessing.py)
-        sensor_array = np.array(sensor_data, dtype=np.float32).reshape(1, WINDOW_SIZE, 6)
-        
-        # Apply MinMax scaling
-        n_samples, n_frames, n_features = sensor_array.shape
-        sensor_reshaped = sensor_array.reshape(-1, n_features)
-        sensor_scaled = minmax_scaler.transform(sensor_reshaped)
-        sensor_scaled = sensor_scaled.reshape(n_samples, n_frames, n_features).astype(np.float32)
-        
-        # TensorFlow Lite model inference
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-        
-        interpreter.set_tensor(input_details[0]['index'], sensor_scaled)
-        interpreter.invoke()
-        
-        # Get prediction results
-        prediction = interpreter.get_tensor(output_details[0]['index'])
-        
-        # Convert probability to binary classification (using threshold)
-        gait_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
-        predicted_class = "gait" if gait_probability > GAIT_THRESHOLD else "non_gait"
-        
-        last_gait_status = predicted_class
-        return predicted_class, float(gait_probability)
-        
-    except Exception as e:
-        print(f"⚠️  Gait detection error: {str(e)}")
-        return "unknown", 0.0
-
-def connect_wifi():
-    """Setup WiFi connection"""
-    global wifi_client, wifi_connected
-    try:
-        wifi_client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        wifi_client.settimeout(5.0)  # 5 second timeout
-        wifi_client.connect((WIFI_SERVER_IP, WIFI_SERVER_PORT))
-        wifi_connected = True
-        print(f"✅ WiFi connection successful: {WIFI_SERVER_IP}:{WIFI_SERVER_PORT}")
-        return True
-    except socket.timeout:
-        print(f"❌ WiFi connection timeout: {WIFI_SERVER_IP}:{WIFI_SERVER_PORT}")
-        wifi_connected = False
-        return False
-    except Exception as e:
-        print(f"❌ WiFi connection failed: {str(e)}")
-        wifi_connected = False
-        return False
-
-def send_data_thread():
-    """Data transmission thread"""
-    global send_data_queue, wifi_client, wifi_connected
-    
-    while wifi_connected:
-        if len(send_data_queue) > 0:
-            try:
-                # Get data from queue
-                sensor_data = send_data_queue.pop(0)
-                # Convert to JSON format and send
-                data_json = json.dumps(sensor_data)
-                wifi_client.sendall((data_json + '\n').encode('utf-8'))
-            except Exception as e:
-                print(f"❌ Data transmission error: {str(e)}")
-                wifi_connected = False
-                break
-        else:
-            time.sleep(0.001)
-
-def close_wifi():
-    """Close WiFi connection"""
-    global wifi_client, wifi_connected
-    if wifi_client:
-        try:
-            wifi_client.close()
-            print("✅ WiFi connection closed")
-        except:
-            pass
-    wifi_connected = False
-
-def start_new_bout():
-    """Start a new walking bout"""
-    global current_bout_data, bout_counter, current_csv_filename, bout_start_time
-    
-    bout_counter += 1
-    current_bout_data = []
-    bout_start_time = time.time()
-    
-    # Generate filename for current bout
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    current_csv_filename = f"walking_bout_{bout_counter:03d}_{timestamp}.csv"
-    
-    print(f"🚶 Walking bout {bout_counter} started - File: {current_csv_filename}")
-
-def save_current_bout():
-    """Save current walking bout to CSV file"""
-    global current_bout_data, current_csv_filename, bout_start_time
-    
-    if len(current_bout_data) > 0 and current_csv_filename:
-        # Create dataframe and save
-        columns = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ', 'Timestamp', 'GaitStatus']
-        df = pd.DataFrame(current_bout_data, columns=columns)
-        df.to_csv(current_csv_filename, index=False)
-        
-        # Calculate bout statistics
-        bout_duration = time.time() - bout_start_time if bout_start_time else 0
-        gait_frames = sum(1 for row in current_bout_data if row[7] == "gait")
-        total_frames = len(current_bout_data)
-        gait_percentage = (gait_frames / total_frames * 100) if total_frames > 0 else 0
-        
-        print(f"💾 Walking bout {bout_counter} saved:")
-        print(f"   📄 File: {current_csv_filename}")
-        print(f"   ⏱️  Duration: {bout_duration:.2f}s")
-        print(f"   📊 Total frames: {total_frames}")
-        print(f"   🚶 Gait frames: {gait_frames} ({gait_percentage:.1f}%)")
-        
-        # Reset bout data
-        current_bout_data = []
-        current_csv_filename = None
-        bout_start_time = None
-
-def update_walking_bout_state(gait_status, gait_probability):
-    """Update walking-bout segmentation state"""
-    global current_state, consecutive_gait_frames, consecutive_non_gait_frames
-    
-    # Update consecutive frame counters
-    if gait_status == "gait":
-        consecutive_gait_frames += 1
-        consecutive_non_gait_frames = 0
-    elif gait_status == "non_gait":
-        consecutive_non_gait_frames += 1
-        consecutive_gait_frames = 0
-    else:
-        # Unknown status - don't change counters
-        return current_state, False
-    
-    previous_state = current_state
-    should_transmit = False
-    
-    # State transition logic
-    if current_state == IDLE:
-        # IDLE → WALKING: N1 consecutive gait frames
-        if consecutive_gait_frames >= N1:
-            current_state = WALKING
-            start_new_bout()
-            should_transmit = True
-            print(f"🔄 State change: {previous_state} → {current_state}")
-    
-    elif current_state == WALKING:
-        # Continue transmission if gait probability > threshold
-        if gait_probability > GAIT_THRESHOLD:
-            should_transmit = True
-        
-        # WALKING → POST_WALK: N2 consecutive non-gait frames
-        if consecutive_non_gait_frames >= N2:
-            current_state = POST_WALK
-            print(f"🔄 State change: {previous_state} → {current_state}")
-    
-    elif current_state == POST_WALK:
-        # POST_WALK → IDLE: save current bout and return to idle
-        save_current_bout()
-        current_state = IDLE
-        consecutive_gait_frames = 0
-        consecutive_non_gait_frames = 0
-        print(f"🔄 State change: {previous_state} → {current_state}")
-    
-    return current_state, should_transmit
-
-def main():
-    """Main execution function"""
-    global sensor_buffer, gait_count, non_gait_count, current_bout_data
-    
-    print("=" * 60)
-    print("🚶 GAIT Detection IMU Sensor Data Collection Program (30Hz)")
-    print("📊 Walking-Bout Segmentation Logic Enabled")
-    print("=" * 60)
+def load_models():
+    """Load gait and fall detection models"""
+    global gait_interpreter, gait_scaler, fall_interpreter, fall_scalers
     
     # Load gait detection model
-    if not load_gait_detection_model():
-        print("⚠️  Unable to load gait detection model. All data will be transmitted.")
-    
-    # Initialize sensor
-    bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
-    
-    # Set base filename for logging (all sensor data)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_filename = f"gait_log_all_data_{timestamp}.csv"
-    all_data = []  # Store all data for logging
-    
-    print(f"📄 Complete data log file: {log_filename}")
-    print(f"🎯 Gait detection threshold: {GAIT_THRESHOLD}")
-    print(f"📊 Walking-Bout parameters: N1={N1}, N2={N2}, θ={GAIT_THRESHOLD}")
-    print(f"🔄 Initial state: {current_state}")
-    print("Press Ctrl+C to stop collection")
-    
-    # Attempt WiFi connection
-    wifi_thread = None
-    if connect_wifi():
-        wifi_thread = threading.Thread(target=send_data_thread)
-        wifi_thread.daemon = True
-        wifi_thread.start()
-    
-    # Initial time
-    start_time = time.time()
-    sample_count = 0
-    
     try:
-        while True:
-            # Calculate current sample time
-            current_time = time.time()
-            elapsed = current_time - start_time
+        if os.path.exists(GAIT_MODEL_PATH):
+            gait_interpreter = tf.lite.Interpreter(model_path=GAIT_MODEL_PATH)
+            gait_interpreter.allocate_tensors()
+            print(f"✅ Gait model loaded: {GAIT_MODEL_PATH}")
+        
+        # Load gait scaler
+        gait_scaler_file = os.path.join(GAIT_SCALER_PATH, "minmax_scaler.pkl")
+        if os.path.exists(gait_scaler_file):
+            with open(gait_scaler_file, 'rb') as f:
+                gait_scaler = pickle.load(f)
+            print(f"✅ Gait scaler loaded")
+    except Exception as e:
+        print(f"❌ Gait model loading error: {e}")
+    
+    # Load fall detection model
+    try:
+        if os.path.exists(FALL_MODEL_PATH):
+            fall_interpreter = tf.lite.Interpreter(model_path=FALL_MODEL_PATH)
+            fall_interpreter.allocate_tensors()
+            print(f"✅ Fall model loaded: {FALL_MODEL_PATH}")
+        
+        # Load fall scalers (both minmax and standard)
+        for sensor in ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ']:
+            minmax_file = os.path.join(FALL_SCALER_PATH, f"{sensor}_minmax_scaler.pkl")
+            standard_file = os.path.join(FALL_SCALER_PATH, f"{sensor}_standard_scaler.pkl")
             
+            if os.path.exists(minmax_file):
+                with open(minmax_file, 'rb') as f:
+                    fall_scalers[f"{sensor}_minmax"] = pickle.load(f)
+            
+            if os.path.exists(standard_file):
+                with open(standard_file, 'rb') as f:
+                    fall_scalers[f"{sensor}_standard"] = pickle.load(f)
+        
+        print(f"✅ Fall scalers loaded")
+    except Exception as e:
+        print(f"❌ Fall model loading error: {e}")
+
+def sensor_collection_thread():
+    """Thread for collecting sensor data at 30Hz"""
+    global raw_sensor_buffer, is_running
+    
+    start_time = time.time()
+    frame_count = 0
+    
+    while is_running:
+        try:
             # Read IMU sensor data
             accel_x = accel_ms2(read_data(register_accel_xout_h))
             accel_y = accel_ms2(read_data(register_accel_yout_h))
@@ -365,111 +169,331 @@ def main():
             gyro_y = gyro_dps(read_data(register_gyro_yout_h))
             gyro_z = gyro_dps(read_data(register_gyro_zout_h))
             
-            # Sensor data (same order as Stage1 preprocessing)
-            sensor_row = [accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z]
+            # Calculate timestamp
+            current_time = time.time()
+            sync_timestamp = current_time - start_time
             
-            # Add to buffer for gait detection
-            sensor_buffer.append(sensor_row)
+            # Store raw sensor data with frame info
+            sensor_data = {
+                'frame': frame_count,
+                'sync_timestamp': sync_timestamp,
+                'accel_x': accel_x,
+                'accel_y': -accel_y,
+                'accel_z': accel_z,
+                'gyro_x': gyro_x,
+                'gyro_y': gyro_y,
+                'gyro_z': gyro_z,
+                'unix_timestamp': current_time
+            }
             
-            # Gait detection (when buffer is sufficiently filled)
-            gait_status = "unknown"
-            gait_probability = 0.0
-            if len(sensor_buffer) == WINDOW_SIZE:
-                gait_status, gait_probability = predict_gait(list(sensor_buffer))
-                
-                # Update statistics
-                if gait_status == "gait":
-                    gait_count += 1
-                elif gait_status == "non_gait":
-                    non_gait_count += 1
-                
-                # Update walking-bout state and determine transmission
-                state, should_transmit = update_walking_bout_state(gait_status, gait_probability)
-                
-                # WiFi transmission based on walking-bout state
-                if should_transmit and wifi_connected:
-                    sensor_data_wifi = {
-                        'timestamp': elapsed,
-                        'accel': {'x': accel_x, 'y': -accel_y, 'z': accel_z},  # Y-axis inverted
-                        'gyro': {'x': gyro_x, 'y': -gyro_y, 'z': gyro_z},      # Y-axis inverted
-                        'gait_status': gait_status,
-                        'bout_state': state,
-                        'bout_number': bout_counter
-                    }
-                    send_data_queue.append(sensor_data_wifi)
-                
-                # Add to current bout data if in WALKING state
-                if current_state == WALKING:
-                    current_bout_data.append([accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, elapsed, gait_status])
+            with sensor_data_lock:
+                raw_sensor_buffer.append(sensor_data)
             
-            # Save all data to complete log (including gait status and state)
-            all_data.append([accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z, elapsed, gait_status, current_state])
-            sample_count += 1
+            frame_count += 1
             
-            # Output progress every 30 samples
-            if sample_count % 30 == 0:
-                total_predictions = gait_count + non_gait_count
-                gait_percentage = (gait_count / total_predictions * 100) if total_predictions > 0 else 0
-                
-                print(f"📊 Samples: {sample_count}, Time: {elapsed:.2f}s, Sampling rate: {sample_count/elapsed:.2f}Hz")
-                print(f"🏃 Acceleration(m/s²): X={accel_x:.2f}, Y={accel_y:.2f}, Z={accel_z:.2f}")
-                print(f"🔄 Gyroscope(°/s): X={gyro_x:.2f}, Y={gyro_y:.2f}, Z={gyro_z:.2f}")
-                print(f"🚶 Gait status: {gait_status} (Gait ratio: {gait_percentage:.1f}%)")
-                print(f"🔄 Walking-Bout State: {current_state}")
-                print(f"   📊 Consecutive gait: {consecutive_gait_frames}, non-gait: {consecutive_non_gait_frames}")
-                print(f"   📄 Current bout: {bout_counter}, bout frames: {len(current_bout_data)}")
-                if wifi_connected:
-                    transmitted = "Transmitted" if current_state == WALKING and len(sensor_buffer) == WINDOW_SIZE else "Not transmitted"
-                    print(f"📡 WiFi: Connected, Queue length: {len(send_data_queue)}, Status: {transmitted}")
-                else:
-                    print("📡 WiFi: Not connected")
-                print("-" * 50)
-            
-            # Maintain sampling rate (30Hz)
-            next_sample_time = start_time + (sample_count * (1.0 / TARGET_HZ))
+            # Maintain 30Hz sampling rate
+            next_sample_time = start_time + (frame_count * (1.0 / TARGET_HZ))
             sleep_time = next_sample_time - time.time()
             
             if sleep_time > 0:
                 time.sleep(sleep_time)
+                
+        except Exception as e:
+            print(f"❌ Sensor collection error: {e}")
+            time.sleep(0.01)
+
+def preprocess_for_gait(sensor_window):
+    """Preprocess sensor data for gait detection"""
+    if not gait_scaler:
+        return None
     
-    except KeyboardInterrupt:
-        print("\n🛑 Data collection interrupted!")
+    try:
+        # Extract sensor values in correct order
+        sensor_array = np.array([[
+            data['accel_x'], data['accel_y'], data['accel_z'],
+            data['gyro_x'], data['gyro_y'], data['gyro_z']
+        ] for data in sensor_window], dtype=np.float32)
+        
+        # Reshape for scaler
+        sensor_array = sensor_array.reshape(1, WINDOW_SIZE, 6)
+        n_samples, n_frames, n_features = sensor_array.shape
+        sensor_reshaped = sensor_array.reshape(-1, n_features)
+        
+        # Apply MinMax scaling
+        sensor_scaled = gait_scaler.transform(sensor_reshaped)
+        sensor_scaled = sensor_scaled.reshape(n_samples, n_frames, n_features).astype(np.float32)
+        
+        return sensor_scaled
+    except Exception as e:
+        print(f"❌ Gait preprocessing error: {e}")
+        return None
+
+def preprocess_for_fall(sensor_window):
+    """Preprocess sensor data for fall detection"""
+    if not fall_scalers:
+        return None
+    
+    try:
+        # Process each sensor channel
+        processed_data = []
+        
+        for data in sensor_window:
+            # Apply transformations for fall detection
+            acc_x = data['accel_x'] / 9.80665
+            acc_y = -data['accel_y'] / 9.80665  # Sign change
+            acc_z = data['accel_z'] / 9.80665
+            gyr_x = data['gyro_x']
+            gyr_y = data['gyro_y']
+            gyr_z = data['gyro_z']
+            
+            processed_data.append([acc_x, acc_y, acc_z, gyr_x, gyr_y, gyr_z])
+        
+        # Apply fall-specific scaling
+        # Note: You may need to adjust this based on your fall model's requirements
+        sensor_array = np.array(processed_data, dtype=np.float32)
+        
+        # Apply scalers for each channel if needed
+        # This depends on your fall detection model's preprocessing
+        
+        return sensor_array.reshape(1, WINDOW_SIZE, 6)
+    except Exception as e:
+        print(f"❌ Fall preprocessing error: {e}")
+        return None
+
+def gait_detection_thread():
+    """Thread for gait detection"""
+    global gait_state, gait_frame_count, non_gait_frame_count
+    global current_gait_start_frame, current_gait_data
+    
+    while is_running:
+        try:
+            with sensor_data_lock:
+                if len(raw_sensor_buffer) >= WINDOW_SIZE:
+                    # Get latest window
+                    sensor_window = list(raw_sensor_buffer)[-WINDOW_SIZE:]
+                else:
+                    time.sleep(0.1)
+                    continue
+            
+            # Preprocess and predict
+            if gait_interpreter and gait_scaler:
+                preprocessed = preprocess_for_gait(sensor_window)
+                if preprocessed is not None:
+                    # Run inference
+                    input_details = gait_interpreter.get_input_details()
+                    output_details = gait_interpreter.get_output_details()
+                    
+                    gait_interpreter.set_tensor(input_details[0]['index'], preprocessed)
+                    gait_interpreter.invoke()
+                    
+                    prediction = gait_interpreter.get_tensor(output_details[0]['index'])
+                    gait_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
+                    
+                    # Update frame counts
+                    if gait_probability > GAIT_THRESHOLD:
+                        gait_frame_count += 1
+                        non_gait_frame_count = 0
+                    else:
+                        non_gait_frame_count += 1
+                        gait_frame_count = 0
+                    
+                    # State transition logic
+                    if gait_state == "non-gait" and gait_frame_count >= GAIT_TRANSITION_FRAMES:
+                        gait_state = "gait"
+                        current_gait_start_frame = sensor_window[0]['frame']
+                        current_gait_data = []
+                        print(f"🚶 Gait started at frame {current_gait_start_frame}")
+                    
+                    elif gait_state == "gait":
+                        # Add current frame data to gait data
+                        current_gait_data.extend(sensor_window[-1:])
+                        
+                        # Check for gait end
+                        if non_gait_frame_count >= GAIT_TRANSITION_FRAMES:
+                            # Check if gait duration was long enough
+                            gait_duration_frames = len(current_gait_data)
+                            if gait_duration_frames >= MIN_GAIT_DURATION_FRAMES:
+                                # Save gait data to Supabase
+                                save_gait_data_to_supabase(current_gait_data)
+                            else:
+                                print(f"⚠️ Gait duration too short: {gait_duration_frames} frames")
+                            
+                            gait_state = "non-gait"
+                            current_gait_data = []
+            
+            time.sleep(0.033)  # ~30Hz
+            
+        except Exception as e:
+            print(f"❌ Gait detection error: {e}")
+            time.sleep(0.1)
+
+def fall_detection_thread():
+    """Thread for fall detection"""
+    while is_running:
+        try:
+            with sensor_data_lock:
+                if len(raw_sensor_buffer) >= WINDOW_SIZE:
+                    sensor_window = list(raw_sensor_buffer)[-WINDOW_SIZE:]
+                else:
+                    time.sleep(0.1)
+                    continue
+            
+            # Preprocess and predict
+            if fall_interpreter and fall_scalers:
+                preprocessed = preprocess_for_fall(sensor_window)
+                if preprocessed is not None:
+                    # Run inference
+                    input_details = fall_interpreter.get_input_details()
+                    output_details = fall_interpreter.get_output_details()
+                    
+                    fall_interpreter.set_tensor(input_details[0]['index'], preprocessed)
+                    fall_interpreter.invoke()
+                    
+                    prediction = fall_interpreter.get_tensor(output_details[0]['index'])
+                    fall_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
+                    
+                    # Check for fall
+                    if fall_probability > FALL_THRESHOLD:
+                        print(f"🚨 Fall detected! Probability: {fall_probability:.2f}")
+                        save_fall_event_to_supabase(sensor_window[-1]['unix_timestamp'])
+            
+            time.sleep(0.033)  # ~30Hz
+            
+        except Exception as e:
+            print(f"❌ Fall detection error: {e}")
+            time.sleep(0.1)
+
+def save_gait_data_to_supabase(gait_data):
+    """Save gait data as CSV to Supabase"""
+    if not supabase:
+        print("❌ Supabase not initialized")
+        return
+    
+    try:
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write header
+        writer.writerow(['frame', 'sync_timestamp', 'accel_x', 'accel_y', 'accel_z', 
+                        'gyro_x', 'gyro_y', 'gyro_z'])
+        
+        # Write data with proper formatting
+        first_timestamp = gait_data[0]['sync_timestamp']
+        for data in gait_data:
+            writer.writerow([
+                data['frame'],
+                f"{data['sync_timestamp'] - first_timestamp:.6f}",  # Relative timestamp from 0
+                f"{data['accel_x']:.3f}",
+                f"{data['accel_y']:.3f}",
+                f"{data['accel_z']:.3f}",
+                f"{data['gyro_x']:.5f}",
+                f"{data['gyro_y']:.5f}",
+                f"{data['gyro_z']:.5f}"
+            ])
+        
+        # Generate filename with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"gait_data_{timestamp}.csv"
+        
+        # Convert to bytes
+        csv_content = output.getvalue()
+        csv_bytes = csv_content.encode('utf-8')
+        
+        # Upload to Supabase Storage
+        response = supabase.storage.from_('gait-data').upload(
+            file=csv_bytes,
+            path=filename,
+            file_options={"content-type": "text/csv"}
+        )
+        
+        print(f"✅ Gait data saved: {filename} ({len(gait_data)} frames)")
         
     except Exception as e:
-        print(f"\n❌ Error occurred: {str(e)}")
+        print(f"❌ Failed to save gait data: {e}")
+
+def save_fall_event_to_supabase(timestamp):
+    """Save fall event to Supabase database"""
+    if not supabase:
+        print("❌ Supabase not initialized")
+        return
+    
+    try:
+        # Insert fall event into Fall History table
+        data = {
+            'timestamp': datetime.datetime.fromtimestamp(timestamp).isoformat(),
+            'detected_at': datetime.datetime.now().isoformat()
+        }
+        
+        response = supabase.table('fall_history').insert(data).execute()
+        print(f"✅ Fall event saved to database")
+        
+    except Exception as e:
+        print(f"❌ Failed to save fall event: {e}")
+
+def main():
+    """Main execution function"""
+    global is_running
+    
+    print("=" * 60)
+    print("🚶 Gait & Fall Detection System")
+    print("=" * 60)
+    
+    # Initialize Supabase
+    if not init_supabase():
+        print("⚠️ Continuing without Supabase")
+    
+    # Load models
+    load_models()
+    
+    # Initialize IMU sensor
+    bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
+    print("✅ IMU sensor initialized")
+    
+    # Start threads
+    is_running = True
+    
+    sensor_thread = threading.Thread(target=sensor_collection_thread)
+    sensor_thread.daemon = True
+    sensor_thread.start()
+    print("✅ Sensor collection thread started")
+    
+    gait_thread = threading.Thread(target=gait_detection_thread)
+    gait_thread.daemon = True
+    gait_thread.start()
+    print("✅ Gait detection thread started")
+    
+    fall_thread = threading.Thread(target=fall_detection_thread)
+    fall_thread.daemon = True
+    fall_thread.start()
+    print("✅ Fall detection thread started")
+    
+    print("\nPress Ctrl+C to stop\n")
+    
+    try:
+        while True:
+            time.sleep(1)
+            
+            # Print status every 5 seconds
+            if int(time.time()) % 5 == 0:
+                with sensor_data_lock:
+                    buffer_size = len(raw_sensor_buffer)
+                print(f"📊 Status - Buffer: {buffer_size}, State: {gait_state}")
+                
+    except KeyboardInterrupt:
+        print("\n🛑 Stopping system...")
         
     finally:
-        # Save any remaining bout data
-        if current_state == WALKING and len(current_bout_data) > 0:
-            save_current_bout()
+        is_running = False
+        time.sleep(1)  # Allow threads to finish
         
-        # Create and save complete log dataframe
-        columns = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ', 'Timestamp', 'GaitStatus', 'BoutState']
-        df_all = pd.DataFrame(all_data, columns=columns)
-        df_all.to_csv(log_filename, index=False)
+        # Save any remaining gait data
+        if gait_state == "gait" and current_gait_data:
+            if len(current_gait_data) >= MIN_GAIT_DURATION_FRAMES:
+                save_gait_data_to_supabase(current_gait_data)
         
-        # Output final statistics
-        total_samples = len(df_all)
-        total_predictions = gait_count + non_gait_count
-        gait_percentage = (gait_count / total_predictions * 100) if total_predictions > 0 else 0
-        
-        print("=" * 60)
-        print("📊 Collection Complete Statistics")
-        print("=" * 60)
-        print(f"📄 Complete log file: {log_filename}")
-        print(f"📈 Total samples: {total_samples}")
-        print(f"🚶 Total walking bouts detected: {bout_counter}")
-        print(f"🔄 Final state: {current_state}")
-        print(f"🚶 Gait detected: {gait_count} times ({gait_percentage:.1f}%)")
-        print(f"🏃 Non-gait detected: {non_gait_count} times ({100-gait_percentage:.1f}%)")
-        print(f"⏱️  Total collection time: {elapsed:.2f}s")
-        print(f"📊 Average sampling rate: {total_samples/elapsed:.2f}Hz")
-        print("=" * 60)
-        
-        # Resource cleanup
-        close_wifi()
         bus.close()
-        print("✅ All resources cleaned up")
+        print("✅ System stopped")
 
 if __name__ == "__main__":
-    main() 
+    main()
