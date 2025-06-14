@@ -23,6 +23,8 @@ from supabase import create_client, Client
 import io
 import csv
 
+load_dotenv()
+
 # Global variables
 bus = SMBus(1)
 DEV_ADDR = 0x68
