@@ -2,11 +2,13 @@
 보행 및 낙상 감지 IMU 센서 데이터 수집 프로그램
 Created: 2025-01-30
 MODIFIED 2025-01-30: 실시간 센서 데이터 로그 출력 기능 추가
+MODIFIED 2025-01-30: 낙상 감지 모델 윈도우 크기 수정 (60 → 150 프레임)
+MODIFIED 2025-01-30: Y축 부호 처리 중복 제거 (센서 수집에서만 처리)
 Features:
 - 30Hz IMU 센서 데이터 수집 (멀티스레드)
 - 실시간 센서 데이터 로그 출력 (토글 가능)
-- 실시간 보행 감지 (TensorFlow Lite)
-- 실시간 낙상 감지 (TensorFlow Lite)
+- 실시간 보행 감지 (TensorFlow Lite, 60 프레임)
+- 실시간 낙상 감지 (TensorFlow Lite, 150 프레임)
 - Supabase 직접 업로드
 - 키보드 제어: 's' (로그 토글), 'd' (상세 상태)
 """
@@ -47,7 +49,8 @@ GAIT_SCALER_PATH = "scalers/gait_detection"
 FALL_SCALER_PATH = "scalers/fall_detection"
 
 # Detection parameters
-WINDOW_SIZE = 60  # Window size for models
+GAIT_WINDOW_SIZE = 60   # Window size for gait detection model
+FALL_WINDOW_SIZE = 150  # Window size for fall detection model
 TARGET_HZ = 30   # Sampling rate
 GAIT_THRESHOLD = 0.5  # Gait detection threshold
 FALL_THRESHOLD = 0.5  # Fall detection threshold
@@ -63,7 +66,7 @@ supabase: Client = None
 
 # Global variables for sensor data collection
 sensor_data_lock = threading.Lock()
-raw_sensor_buffer = deque(maxlen=WINDOW_SIZE * 10)  # Store more for CSV saving
+raw_sensor_buffer = deque(maxlen=max(GAIT_WINDOW_SIZE, FALL_WINDOW_SIZE) * 10)  # Store more for CSV saving
 is_running = False
 show_sensor_logs = True  # Flag to control sensor data logging
 
@@ -167,7 +170,7 @@ def sensor_collection_thread():
         try:
             # Read IMU sensor data
             accel_x = accel_ms2(read_data(register_accel_xout_h))
-            accel_y = accel_ms2(read_data(register_accel_yout_h))
+            accel_y = -accel_ms2(read_data(register_accel_yout_h))
             accel_z = accel_ms2(read_data(register_accel_zout_h))
             
             gyro_x = gyro_dps(read_data(register_gyro_xout_h))
@@ -183,7 +186,7 @@ def sensor_collection_thread():
                 'frame': frame_count,
                 'sync_timestamp': sync_timestamp,
                 'accel_x': accel_x,
-                'accel_y': -accel_y,
+                'accel_y': accel_y,
                 'accel_z': accel_z,
                 'gyro_x': gyro_x,
                 'gyro_y': gyro_y,
@@ -229,7 +232,7 @@ def preprocess_for_gait(sensor_window):
         ] for data in sensor_window], dtype=np.float32)
         
         # Reshape for scaler
-        sensor_array = sensor_array.reshape(1, WINDOW_SIZE, 6)
+        sensor_array = sensor_array.reshape(1, GAIT_WINDOW_SIZE, 6)
         n_samples, n_frames, n_features = sensor_array.shape
         sensor_reshaped = sensor_array.reshape(-1, n_features)
         
@@ -254,7 +257,7 @@ def preprocess_for_fall(sensor_window):
         for data in sensor_window:
             # Apply transformations for fall detection
             acc_x = data['accel_x'] / 9.80665
-            acc_y = -data['accel_y'] / 9.80665  # Sign change
+            acc_y = data['accel_y'] / 9.80665  # No sign change (already done in sensor collection)
             acc_z = data['accel_z'] / 9.80665
             gyr_x = data['gyro_x']
             gyr_y = data['gyro_y']
@@ -269,7 +272,7 @@ def preprocess_for_fall(sensor_window):
         # Apply scalers for each channel if needed
         # This depends on your fall detection model's preprocessing
         
-        return sensor_array.reshape(1, WINDOW_SIZE, 6)
+        return sensor_array.reshape(1, FALL_WINDOW_SIZE, 6)
     except Exception as e:
         print(f"❌ Fall preprocessing error: {e}")
         return None
@@ -282,9 +285,9 @@ def gait_detection_thread():
     while is_running:
         try:
             with sensor_data_lock:
-                if len(raw_sensor_buffer) >= WINDOW_SIZE:
+                if len(raw_sensor_buffer) >= GAIT_WINDOW_SIZE:
                     # Get latest window
-                    sensor_window = list(raw_sensor_buffer)[-WINDOW_SIZE:]
+                    sensor_window = list(raw_sensor_buffer)[-GAIT_WINDOW_SIZE:]
                 else:
                     time.sleep(0.1)
                     continue
@@ -346,8 +349,8 @@ def fall_detection_thread():
     while is_running:
         try:
             with sensor_data_lock:
-                if len(raw_sensor_buffer) >= WINDOW_SIZE:
-                    sensor_window = list(raw_sensor_buffer)[-WINDOW_SIZE:]
+                if len(raw_sensor_buffer) >= FALL_WINDOW_SIZE:
+                    sensor_window = list(raw_sensor_buffer)[-FALL_WINDOW_SIZE:]
                 else:
                     time.sleep(0.1)
                     continue
@@ -464,7 +467,7 @@ def print_detailed_sensor_status():
             print("="*80)
             print(f"Frame Number: {latest_data['frame']}")
             print(f"Sync Timestamp: {latest_data['sync_timestamp']:.3f}s")
-            print(f"Buffer Size: {buffer_size}/{WINDOW_SIZE * 10}")
+            print(f"Buffer Size: {buffer_size}/{max(GAIT_WINDOW_SIZE, FALL_WINDOW_SIZE) * 10}")
             print(f"Gait State: {gait_state}")
             print(f"Sensor Logging: {'ON' if show_sensor_logs else 'OFF'}")
             print("-" * 80)
