@@ -477,7 +477,7 @@ def test_supabase_connection():
         return False
 
 def save_gait_data_to_supabase(gait_data):
-    """Save gait data to Supabase"""
+    """Save gait data to Supabase with local backup fallback"""
     if not supabase:
         print("⚠️ Supabase not initialized - cannot save gait data")
         return
@@ -495,7 +495,7 @@ def save_gait_data_to_supabase(gait_data):
         for i, data in enumerate(gait_data):
             csv_writer.writerow([
                 i,  # frame: gait 시작을 0으로 하여 1씩 증가
-                                 f"{i * 0.033:.3f}",  # sync_timestamp: 0.033초씩 증가 (30Hz)
+                f"{i * 0.033:.3f}",  # sync_timestamp: 0.033초씩 증가 (30Hz)
                 f"{data['accel_x']:.3f}",  # 가속도: 소수점 3자리 반올림
                 f"{data['accel_y']:.3f}",
                 f"{data['accel_z']:.3f}",
@@ -506,18 +506,59 @@ def save_gait_data_to_supabase(gait_data):
             ])
         
         # Upload to Supabase (기존 버킷명 사용)
+        filename = f"gait_{int(time.time())}.csv"
+        csv_content = csv_data.getvalue()
+        
+        # Debug: Check content length to prevent file name too long error
+        print(f"📊 Uploading gait data: {len(gait_data)} frames, CSV size: {len(csv_content)} chars")
+        
         response = supabase.storage.from_("gait-data").upload(
-            f"gait_{int(time.time())}.csv",
-            csv_data.getvalue(),
+            filename,
+            csv_content.encode('utf-8'),  # Explicitly encode as bytes
             {"content-type": "text/csv"}
         )
         
         if response:
-            print(f"✅ Gait data saved to Supabase: {response}")
+            print(f"✅ Gait data saved to Supabase: {filename}")
         else:
-            print("⚠️ Failed to save gait data to Supabase")
+            print("⚠️ Failed to save gait data to Supabase - trying local backup")
+            # Fallback: Save locally
+            try:
+                local_filename = f"backup_gait_{int(time.time())}.csv"
+                with open(local_filename, 'w', encoding='utf-8') as f:
+                    f.write(csv_content)
+                print(f"✅ Gait data saved locally: {local_filename}")
+            except Exception as local_e:
+                print(f"❌ Local backup also failed: {local_e}")
+                
     except Exception as e:
         print(f"❌ Error saving gait data to Supabase: {e}")
+        # Fallback: Save locally when Supabase fails
+        try:
+            csv_data = io.StringIO()
+            csv_writer = csv.writer(csv_data)
+            
+            # Write header
+            csv_writer.writerow(['frame', 'sync_timestamp', 'accel_x', 'accel_y', 'accel_z', 
+                                'gyro_x', 'gyro_y', 'gyro_z', 'unix_timestamp'])
+            
+            # Write data
+            for i, data in enumerate(gait_data):
+                csv_writer.writerow([
+                    i, f"{i * 0.033:.3f}",
+                    f"{data['accel_x']:.3f}", f"{data['accel_y']:.3f}", f"{data['accel_z']:.3f}",
+                    f"{data['gyro_x']:.5f}", f"{data['gyro_y']:.5f}", f"{data['gyro_z']:.5f}",
+                    data['unix_timestamp']
+                ])
+            
+            local_filename = f"backup_gait_{int(time.time())}.csv"
+            with open(local_filename, 'w', encoding='utf-8') as f:
+                f.write(csv_data.getvalue())
+            print(f"✅ Gait data saved locally as backup: {local_filename}")
+            
+        except Exception as local_e:
+            print(f"❌ Local backup also failed: {local_e}")
+            print(f"⚠️ WARNING: Gait data lost! {len(gait_data)} frames")
 
 def save_fall_event_to_supabase(timestamp):
     """Save fall event to Supabase"""
