@@ -28,9 +28,9 @@ register_accel_zout_h = 0x3F
 sensitive_accel = 16384.0
 
 # ========== 모델 및 전처리 설정 ==========
-MODEL_PATH = "model.tflite"  # TFLite 모델 경로
-SCALER_PATH = "standard_scaler.pkl"  # 또는 "minmax_scaler.pkl"
-ENCODER_PATH = "label_encoder.pkl"
+MODEL_PATH = "models/gait_detection/model.tflite"  # TFLite 모델 경로
+SCALER_PATH = "scalers/gait_detection/standard_scaler.pkl"  # 또는 "minmax_scaler.pkl"
+ENCODER_PATH = "scalers/gait_detection/label_encoder.pkl"
 THRESHOLD = 0.3  # 예측 임계값
 
 # ========== 실시간 예측 설정 ==========
