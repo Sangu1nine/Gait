@@ -57,7 +57,7 @@ GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
 # Detection timing parameters
-FALL_DETECTION_INTERVAL = 0.2  # 낙상 감지 주기 (0.2초 = 5Hz)
+FALL_DETECTION_INTERVAL = 0.2  # 낙상 감지 주기 (0.2초 = 20Hz)
 GAIT_DETECTION_INTERVAL = 0.033  # 보행 감지 주기 (0.033초 ≈ 30Hz)
 
 # Global Supabase client variable
@@ -72,6 +72,7 @@ is_running = False
 # Gait detection variables - 개선된 구조
 gait_interpreter = None
 gait_scaler = None
+gait_label_encoder = None
 gait_state = "non-gait"
 gait_consecutive_count = 0  # 연속된 gait 예측 수
 non_gait_consecutive_count = 0  # 연속된 non-gait 예측 수
@@ -182,7 +183,7 @@ def init_supabase():
 
 def load_models():
     """Load gait and fall detection models with version compatibility"""
-    global gait_interpreter, gait_scaler, fall_interpreter, fall_scalers
+    global gait_interpreter, gait_scaler, gait_label_encoder, fall_interpreter, fall_scalers
     
     # Check scikit-learn version
     try:
@@ -199,7 +200,7 @@ def load_models():
             print(f"✅ Gait model loaded: {GAIT_MODEL_PATH}")
         
         # Load gait scaler with version compatibility
-        gait_scaler_file = os.path.join(GAIT_SCALER_PATH, "minmax_scaler.pkl")
+        gait_scaler_file = os.path.join(GAIT_SCALER_PATH, "standard_scaler.pkl")
         if os.path.exists(gait_scaler_file):
             try:
                 import warnings
@@ -207,11 +208,30 @@ def load_models():
                     warnings.filterwarnings("ignore", category=UserWarning)
                     with open(gait_scaler_file, 'rb') as f:
                         gait_scaler = pickle.load(f)
-                print(f"✅ Gait scaler loaded (version compatibility handled)")
+                print(f"✅ Gait StandardScaler loaded (version compatibility handled)")
             except Exception as scaler_error:
-                print(f"⚠️ Gait scaler loading failed: {scaler_error}")
+                print(f"⚠️ Gait StandardScaler loading failed: {scaler_error}")
                 print("   Continuing without gait scaler - manual scaling may be needed")
                 gait_scaler = None
+        
+        # Load gait label encoder with version compatibility
+        gait_label_encoder_file = os.path.join(GAIT_SCALER_PATH, "label_encoder.pkl")
+        if os.path.exists(gait_label_encoder_file):
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning)
+                    with open(gait_label_encoder_file, 'rb') as f:
+                        gait_label_encoder = pickle.load(f)
+                print(f"✅ Gait LabelEncoder loaded (version compatibility handled)")
+            except Exception as encoder_error:
+                print(f"⚠️ Gait LabelEncoder loading failed: {encoder_error}")
+                print("   Continuing without gait label encoder - prediction results will be numeric")
+                gait_label_encoder = None
+        else:
+            print(f"⚠️ Gait LabelEncoder file not found: {gait_label_encoder_file}")
+            gait_label_encoder = None
+            
     except Exception as e:
         print(f"❌ Gait model loading error: {e}")
     
@@ -352,7 +372,7 @@ def preprocess_for_gait(sensor_window):
         n_samples, n_frames, n_features = sensor_array.shape
         sensor_reshaped = sensor_array.reshape(-1, n_features)
         
-        # Apply MinMax scaling
+        # Apply Standard scaling
         sensor_scaled = gait_scaler.transform(sensor_reshaped)
         sensor_scaled = sensor_scaled.reshape(n_samples, n_frames, n_features).astype(np.float32)
         
@@ -373,7 +393,7 @@ def preprocess_for_fall(sensor_window):
         for data in sensor_window:
             # Apply transformations for fall detection
             acc_x = data['accel_x'] / 9.80665
-            acc_y = -data['accel_y'] / 9.80665  # Sign change
+            acc_y = data['accel_y'] / 9.80665  # Sign change
             acc_z = data['accel_z'] / 9.80665
             gyr_x = data['gyro_x']
             gyr_y = data['gyro_y']
@@ -448,6 +468,18 @@ def gait_detection_thread():
                     prediction = gait_interpreter.get_tensor(output_details[0]['index'])
                     gait_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
                     
+                    # Label decoding for better debugging
+                    if gait_label_encoder:
+                        # Convert probability to binary prediction
+                        binary_pred = 1 if gait_probability > GAIT_THRESHOLD else 0
+                        try:
+                            predicted_label = gait_label_encoder.inverse_transform([binary_pred])[0]
+                            # Debug information with label
+                            if current_gait_frame % 30 == 0:  # Print every 1 second at 30Hz
+                                print(f"🔍 Frame {current_gait_frame}: Prob={gait_probability:.3f}, Pred={predicted_label}")
+                        except Exception as e:
+                            print(f"⚠️ Label decoding failed: {e}")
+                    
                     # Update consecutive counts
                     if gait_probability > GAIT_THRESHOLD:
                         gait_consecutive_count += 1
@@ -477,7 +509,17 @@ def update_gait_state_simple(latest_sensor_data, gait_probability):
             gait_state = "gait"
             current_gait_start_time = latest_sensor_data['unix_timestamp']
             current_gait_data = deque()  # 새로운 gait 데이터 시작
-            print(f"🚶 Gait started at gait_frame {latest_sensor_data['gait_frame']} (confidence: {gait_consecutive_count}/{GAIT_TRANSITION_FRAMES})")
+            
+            # Show label-decoded result
+            label_info = ""
+            if gait_label_encoder:
+                try:
+                    predicted_label = gait_label_encoder.inverse_transform([1])[0]  # 1 = gait
+                    label_info = f" -> {predicted_label}"
+                except:
+                    pass
+            
+            print(f"🚶 Gait started at gait_frame {latest_sensor_data['gait_frame']} (confidence: {gait_consecutive_count}/{GAIT_TRANSITION_FRAMES}){label_info}")
     
     elif gait_state == "gait":
         # 보행 중인 경우 데이터 수집
@@ -489,7 +531,16 @@ def update_gait_state_simple(latest_sensor_data, gait_probability):
             gait_duration_frames = len(current_gait_data)
             gait_duration_seconds = gait_duration_frames / GAIT_TARGET_HZ
             
-            print(f"🛑 Gait ended at gait_frame {latest_sensor_data['gait_frame']} (duration: {gait_duration_frames} frames, {gait_duration_seconds:.1f}s)")
+            # Show label-decoded result
+            label_info = ""
+            if gait_label_encoder:
+                try:
+                    predicted_label = gait_label_encoder.inverse_transform([0])[0]  # 0 = non-gait
+                    label_info = f" -> {predicted_label}"
+                except:
+                    pass
+            
+            print(f"🛑 Gait ended at gait_frame {latest_sensor_data['gait_frame']} (duration: {gait_duration_frames} frames, {gait_duration_seconds:.1f}s){label_info}")
             
             if gait_duration_frames >= MIN_GAIT_DURATION_FRAMES:
                 save_gait_data_to_supabase(list(current_gait_data))

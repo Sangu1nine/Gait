@@ -1,0 +1,45 @@
+{
+  "scaler_type": "standard",
+  "avg_f1_score": 0.8637106376864612,
+  "avg_balanced_accuracy": 0.9719169073127109,
+  "avg_threshold": 0.35,
+  "best_fold": 5,
+  "overfitting_fixes_applied": true,
+  "model_improvements": {
+    "reduced_complexity": "TCN blocks: 4→2, Filters: [32,64]→[16,32]",
+    "regularization": "L2: 1e-4→1e-3, Dropout: 0.5 (maintained)",
+    "training": "LR: 0.001→0.0005, Batch: 256→64"
+  },
+  "fold_performance": [
+    {
+      "fold": 1,
+      "f1_score": 0.8660364440770196,
+      "balanced_accuracy": 0.9013078967569715,
+      "threshold": 0.6
+    },
+    {
+      "fold": 2,
+      "f1_score": 0.9860336157015548,
+      "balanced_accuracy": 0.9852307299326928,
+      "threshold": 0.51
+    },
+    {
+      "fold": 3,
+      "f1_score": 0.9743095168569726,
+      "balanced_accuracy": 0.974399137813772,
+      "threshold": 0.2
+    },
+    {
+      "fold": 4,
+      "f1_score": 0.49990289376577973,
+      "balanced_accuracy": 0.9996116504854369,
+      "threshold": 0.2
+    },
+    {
+      "fold": 5,
+      "f1_score": 0.9922707180309787,
+      "balanced_accuracy": 0.9990351215746816,
+      "threshold": 0.24
+    }
+  ]
+}
