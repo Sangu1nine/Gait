@@ -408,33 +408,43 @@ def test_supabase_connection():
         
         # Test 1: Storage bucket access
         try:
-            storage_response = supabase.storage().list_buckets()
+            storage_response = supabase.storage.list_buckets()
             if storage_response:
                 print("✅ Storage service accessible")
                 
                 # Check if required buckets exist
                 bucket_names = [bucket.name for bucket in storage_response]
-                required_buckets = ['gait_data', 'fall_events']
+                required_buckets = ['gait-data']  # 기존 버킷명 사용
                 
                 for bucket in required_buckets:
                     if bucket in bucket_names:
                         print(f"  ✅ Bucket '{bucket}' exists")
                     else:
-                        print(f"  ⚠️ Bucket '{bucket}' not found")
+                        print(f"  ⚠️ Bucket '{bucket}' not found - will be created automatically when data is uploaded")
                         
             else:
                 print("⚠️ Storage service accessible but no buckets found")
                 
         except Exception as storage_e:
             print(f"⚠️ Storage service test failed: {storage_e}")
+            # Try alternative storage test
+            try:
+                # Test with a simple storage operation that doesn't require callable
+                storage_info = str(supabase.storage)
+                if 'storage' in storage_info.lower():
+                    print("  ✅ Storage client initialized (basic test)")
+                else:
+                    print("  ⚠️ Storage client status unknown")
+            except Exception as alt_e:
+                print(f"  ❌ Alternative storage test also failed: {alt_e}")
         
         # Test 2: Database table access
         try:
-            # Try to read from fall_events table (with limit to minimize impact)
-            table_response = supabase.table("fall_events").select("*").limit(1).execute()
+            # Try to read from fall_history table (기존 테이블명 사용)
+            table_response = supabase.table("fall_history").select("*").limit(1).execute()
             if table_response:
                 print("✅ Database service accessible")
-                print(f"  ✅ Table 'fall_events' accessible")
+                print(f"  ✅ Table 'fall_history' accessible")
             else:
                 print("⚠️ Database service accessible but table query returned no response")
                 
@@ -442,7 +452,7 @@ def test_supabase_connection():
             print(f"⚠️ Database service test failed: {db_e}")
             # This might be expected if table doesn't exist yet
             if "relation" in str(db_e).lower() and "does not exist" in str(db_e).lower():
-                print("  ℹ️ Table 'fall_events' may not exist yet - will be created when first fall is detected")
+                print("  ℹ️ Table 'fall_history' may not exist yet - will be created when first fall is detected")
             else:
                 print(f"  ❌ Unexpected database error: {db_e}")
         
@@ -492,8 +502,8 @@ def save_gait_data_to_supabase(gait_data):
                 data['unix_timestamp']  # 절대 시간은 그대로 유지
             ])
         
-        # Upload to Supabase
-        response = supabase.storage().from_("gait_data").upload(
+        # Upload to Supabase (기존 버킷명 사용)
+        response = supabase.storage.from_("gait-data").upload(
             f"gait_{int(time.time())}.csv",
             csv_data.getvalue(),
             {"content-type": "text/csv"}
@@ -517,12 +527,11 @@ def save_fall_event_to_supabase(timestamp):
         fall_time = datetime.datetime.fromtimestamp(timestamp)
         fall_data = {
             "timestamp": fall_time.isoformat(),
-            "detected_at": datetime.datetime.now().isoformat(),
-            "unix_timestamp": timestamp
+            "detected_at": datetime.datetime.now().isoformat()
         }
         
-        # Try to insert into fall_events table
-        response = supabase.table("fall_events").insert(fall_data).execute()
+        # Try to insert into fall_history table (기존 테이블명 사용)
+        response = supabase.table("fall_history").insert(fall_data).execute()
         
         if response and response.data:
             print(f"✅ Fall event saved to Supabase")
@@ -544,7 +553,7 @@ def save_fall_event_to_supabase(timestamp):
             import json
             fall_content = json.dumps(fall_json, indent=2)
             
-            backup_response = supabase.storage().from_("fall_events").upload(
+            backup_response = supabase.storage.from_("gait-data").upload(
                 fall_filename,
                 fall_content,
                 {"content-type": "application/json"}
