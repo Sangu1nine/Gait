@@ -1,10 +1,10 @@
 """
-보행 및 낙상 감지 IMU 센서 데이터 수집 프로그램 (개선된 버퍼 처리)
-MODIFIED 2025-01-30: 버퍼 처리 로직 개선 - 안정적인 프레임 처리
+보행 및 낙상 감지 IMU 센서 데이터 수집 프로그램 (100Hz 센서, 다운샘플링)
+MODIFIED 2025-01-30: 낙상 감지용 100Hz 센서 수집, 보행 감지용 30Hz 다운샘플링
 Features:
-- 30Hz IMU 센서 데이터 수집 (멀티스레드)
-- 실시간 보행 감지 (TensorFlow Lite) - 개선된 버퍼 관리
-- 실시간 낙상 감지 (TensorFlow Lite)
+- 100Hz IMU 센서 데이터 수집 (멀티스레드)
+- 실시간 낙상 감지 (TensorFlow Lite) - 100Hz 데이터 사용
+- 실시간 보행 감지 (TensorFlow Lite) - 30Hz 다운샘플링 데이터 사용
 - Supabase 직접 업로드
 """
 
@@ -47,20 +47,26 @@ FALL_SCALER_PATH = "scalers/fall_detection"
 # Detection parameters
 GAIT_WINDOW_SIZE = 60  # Window size for gait detection model
 FALL_WINDOW_SIZE = 150  # Window size for fall detection model
-TARGET_HZ = 30   # Sampling rate
-GAIT_THRESHOLD = 0.5  # Gait detection threshold
+SENSOR_HZ = 100  # 센서 데이터 수집 주파수 (100Hz)
+GAIT_TARGET_HZ = 30   # 보행 감지용 다운샘플링 주파수 (30Hz)
+GAIT_THRESHOLD = 0.6  # Gait detection threshold
 FALL_THRESHOLD = 0.5  # Fall detection threshold
 
 # State transition parameters
 GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
+# Detection timing parameters
+FALL_DETECTION_INTERVAL = 0.2  # 낙상 감지 주기 (0.2초 = 5Hz)
+GAIT_DETECTION_INTERVAL = 0.033  # 보행 감지 주기 (0.033초 ≈ 30Hz)
+
 # Global Supabase client variable
 supabase = None
 
 # Global variables for sensor data collection
 sensor_data_lock = threading.Lock()
-raw_sensor_buffer = deque(maxlen=max(GAIT_WINDOW_SIZE, FALL_WINDOW_SIZE) * 5)  # 더 작은 버퍼 크기
+raw_sensor_buffer = deque(maxlen=max(GAIT_WINDOW_SIZE * 4, FALL_WINDOW_SIZE * 2))  # 100Hz 버퍼 크기 조정
+gait_downsampled_buffer = deque(maxlen=GAIT_WINDOW_SIZE * 3)  # 30Hz 다운샘플링된 데이터 버퍼
 is_running = False
 
 # Gait detection variables - 개선된 구조
@@ -261,11 +267,14 @@ def load_models():
         print(f"❌ Fall model loading error: {e}")
 
 def sensor_collection_thread():
-    """Thread for collecting sensor data at 30Hz"""
-    global raw_sensor_buffer, is_running
+    """Thread for collecting sensor data at 100Hz"""
+    global raw_sensor_buffer, gait_downsampled_buffer, is_running
     
     start_time = time.time()
     frame_count = 0
+    gait_frame_count = 0
+    last_gait_sample_time = 0
+    gait_sampling_interval = 1.0 / GAIT_TARGET_HZ  # 30Hz를 위한 샘플링 간격
     
     while is_running:
         try:
@@ -282,7 +291,7 @@ def sensor_collection_thread():
             current_time = time.time()
             sync_timestamp = current_time - start_time
             
-            # Store raw sensor data with frame info
+            # Store raw sensor data (100Hz) for fall detection
             sensor_data = {
                 'frame': frame_count,
                 'sync_timestamp': sync_timestamp,
@@ -296,15 +305,27 @@ def sensor_collection_thread():
             }
             
             with sensor_data_lock:
-                # 버퍼가 가득 찼을 때 오래된 데이터 제거
+                # 100Hz 버퍼에 추가 (낙상 감지용)
                 if len(raw_sensor_buffer) >= raw_sensor_buffer.maxlen:
                     raw_sensor_buffer.popleft()
                 raw_sensor_buffer.append(sensor_data)
+                
+                # 30Hz 다운샘플링 (보행 감지용)
+                if sync_timestamp - last_gait_sample_time >= gait_sampling_interval:
+                    gait_sensor_data = sensor_data.copy()
+                    gait_sensor_data['gait_frame'] = gait_frame_count
+                    
+                    if len(gait_downsampled_buffer) >= gait_downsampled_buffer.maxlen:
+                        gait_downsampled_buffer.popleft()
+                    gait_downsampled_buffer.append(gait_sensor_data)
+                    
+                    last_gait_sample_time = sync_timestamp
+                    gait_frame_count += 1
             
             frame_count += 1
             
-            # Maintain 30Hz sampling rate
-            next_sample_time = start_time + (frame_count * (1.0 / TARGET_HZ))
+            # Maintain 100Hz sampling rate
+            next_sample_time = start_time + (frame_count * (1.0 / SENSOR_HZ))
             sleep_time = next_sample_time - time.time()
             
             if sleep_time > 0:
@@ -312,7 +333,7 @@ def sensor_collection_thread():
                 
         except Exception as e:
             print(f"❌ Sensor collection error: {e}")
-            time.sleep(0.01)
+            time.sleep(0.001)
 
 def preprocess_for_gait(sensor_window):
     """Preprocess sensor data for gait detection"""
@@ -388,28 +409,28 @@ def preprocess_for_fall(sensor_window):
         return None
 
 def gait_detection_thread():
-    """Thread for gait detection - 개선된 간단한 방식"""
+    """Thread for gait detection using 30Hz downsampled data"""
     global gait_state, gait_consecutive_count, non_gait_consecutive_count
     global current_gait_data, current_gait_start_time, last_prediction_frame
     
-    print("🚶 Gait detection thread initialized")
+    print("🚶 Gait detection thread initialized (30Hz downsampled)")
     
     while is_running:
         try:
-            # Get available sensor data
+            # Get available downsampled sensor data (30Hz)
             with sensor_data_lock:
-                if len(raw_sensor_buffer) < GAIT_WINDOW_SIZE:
+                if len(gait_downsampled_buffer) < GAIT_WINDOW_SIZE:
                     time.sleep(0.01)
                     continue
                 
-                # Simple sliding window - just get the latest window
-                sensor_window = list(raw_sensor_buffer)[-GAIT_WINDOW_SIZE:]
+                # Get the latest 30Hz window
+                sensor_window = list(gait_downsampled_buffer)[-GAIT_WINDOW_SIZE:]
             
-            # Get current frame number
-            current_frame = sensor_window[-1]['frame']
+            # Get current gait frame number
+            current_gait_frame = sensor_window[-1]['gait_frame']
             
-            # Skip if already processed this frame
-            if current_frame <= last_prediction_frame:
+            # Skip if already processed this gait frame
+            if current_gait_frame <= last_prediction_frame:
                 time.sleep(0.01)
                 continue
             
@@ -438,16 +459,16 @@ def gait_detection_thread():
                     # State transition logic
                     update_gait_state_simple(sensor_window[-1], gait_probability)
                     
-                    last_prediction_frame = current_frame
+                    last_prediction_frame = current_gait_frame
             
-            time.sleep(0.033)  # ~30Hz
+            time.sleep(GAIT_DETECTION_INTERVAL)  # 30Hz 보행 감지 주기
             
         except Exception as e:
             print(f"❌ Gait detection error: {e}")
             time.sleep(0.1)
 
 def update_gait_state_simple(latest_sensor_data, gait_probability):
-    """간단하고 효율적인 보행 상태 업데이트"""
+    """간단하고 효율적인 보행 상태 업데이트 (30Hz 기준)"""
     global gait_state, current_gait_data, current_gait_start_time
     
     if gait_state == "non-gait":
@@ -456,7 +477,7 @@ def update_gait_state_simple(latest_sensor_data, gait_probability):
             gait_state = "gait"
             current_gait_start_time = latest_sensor_data['unix_timestamp']
             current_gait_data = deque()  # 새로운 gait 데이터 시작
-            print(f"🚶 Gait started at frame {latest_sensor_data['frame']} (confidence: {gait_consecutive_count}/{GAIT_TRANSITION_FRAMES})")
+            print(f"🚶 Gait started at gait_frame {latest_sensor_data['gait_frame']} (confidence: {gait_consecutive_count}/{GAIT_TRANSITION_FRAMES})")
     
     elif gait_state == "gait":
         # 보행 중인 경우 데이터 수집
@@ -466,15 +487,15 @@ def update_gait_state_simple(latest_sensor_data, gait_probability):
         if non_gait_consecutive_count >= GAIT_TRANSITION_FRAMES:
             # 보행 데이터 저장 체크
             gait_duration_frames = len(current_gait_data)
-            gait_duration_seconds = gait_duration_frames / TARGET_HZ
+            gait_duration_seconds = gait_duration_frames / GAIT_TARGET_HZ
             
-            print(f"🛑 Gait ended at frame {latest_sensor_data['frame']} (duration: {gait_duration_frames} frames, {gait_duration_seconds:.1f}s)")
+            print(f"🛑 Gait ended at gait_frame {latest_sensor_data['gait_frame']} (duration: {gait_duration_frames} frames, {gait_duration_seconds:.1f}s)")
             
             if gait_duration_frames >= MIN_GAIT_DURATION_FRAMES:
                 save_gait_data_to_supabase(list(current_gait_data))
                 print(f"✅ Gait data saved ({gait_duration_frames} frames)")
             else:
-                print(f"⚠️ Gait duration too short: {gait_duration_frames} frames ({gait_duration_seconds:.1f}s < {MIN_GAIT_DURATION_FRAMES/TARGET_HZ:.1f}s)")
+                print(f"⚠️ Gait duration too short: {gait_duration_frames} frames ({gait_duration_seconds:.1f}s < {MIN_GAIT_DURATION_FRAMES/GAIT_TARGET_HZ:.1f}s)")
             
             # 상태 리셋
             gait_state = "non-gait"
@@ -482,7 +503,9 @@ def update_gait_state_simple(latest_sensor_data, gait_probability):
             current_gait_start_time = None
 
 def fall_detection_thread():
-    """Thread for fall detection"""
+    """Thread for fall detection using 100Hz data with longer interval"""
+    print("🚨 Fall detection thread initialized (100Hz data, 0.2s interval)")
+    
     while is_running:
         try:
             with sensor_data_lock:
@@ -511,14 +534,14 @@ def fall_detection_thread():
                         print(f"🚨 Fall detected! Probability: {fall_probability:.2f}")
                         save_fall_event_to_supabase(sensor_window[-1]['unix_timestamp'])
             
-            time.sleep(0.033)  # ~30Hz
+            time.sleep(FALL_DETECTION_INTERVAL)  # 더 긴 간격으로 낙상 감지 (0.2초 = 5Hz)
             
         except Exception as e:
             print(f"❌ Fall detection error: {e}")
             time.sleep(0.1)
 
 def save_gait_data_to_supabase(gait_data):
-    """Save gait data as CSV to Supabase"""
+    """Save gait data as CSV to Supabase (30Hz downsampled data)"""
     if not supabase:
         print("❌ Supabase not initialized")
         return
@@ -529,14 +552,14 @@ def save_gait_data_to_supabase(gait_data):
         writer = csv.writer(output)
         
         # Write header
-        writer.writerow(['frame', 'sync_timestamp', 'accel_x', 'accel_y', 'accel_z', 
+        writer.writerow(['gait_frame', 'sync_timestamp', 'accel_x', 'accel_y', 'accel_z', 
                         'gyro_x', 'gyro_y', 'gyro_z'])
         
         # Write data with proper formatting
         first_timestamp = gait_data[0]['sync_timestamp']
         for data in gait_data:
             writer.writerow([
-                data['frame'],
+                data['gait_frame'],
                 f"{data['sync_timestamp'] - first_timestamp:.6f}",  # Relative timestamp from 0
                 f"{data['accel_x']:.3f}",
                 f"{data['accel_y']:.3f}",
@@ -548,7 +571,7 @@ def save_gait_data_to_supabase(gait_data):
         
         # Generate filename with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"gait_data_{timestamp}.csv"
+        filename = f"gait_data_30hz_{timestamp}.csv"
         
         # Convert to bytes
         csv_content = output.getvalue()
@@ -610,7 +633,11 @@ def main():
     global is_running
     
     print("=" * 60)
-    print("🚶 Gait & Fall Detection System (Fixed Buffer)")
+    print("🚶 Gait & Fall Detection System (100Hz/30Hz Optimized)")
+    print("=" * 60)
+    print(f"📊 Sensor collection: {SENSOR_HZ}Hz")
+    print(f"🚶 Gait detection: {GAIT_TARGET_HZ}Hz (downsampled)")
+    print(f"🚨 Fall detection: {SENSOR_HZ}Hz (interval: {FALL_DETECTION_INTERVAL}s)")
     print("=" * 60)
     
     # Initialize Supabase
@@ -631,17 +658,17 @@ def main():
     sensor_thread = threading.Thread(target=sensor_collection_thread)
     sensor_thread.daemon = True
     sensor_thread.start()
-    print("✅ Sensor collection thread started")
+    print("✅ Sensor collection thread started (100Hz)")
     
     gait_thread = threading.Thread(target=gait_detection_thread)
     gait_thread.daemon = True
     gait_thread.start()
-    print("✅ Gait detection thread started")
+    print("✅ Gait detection thread started (30Hz downsampled)")
     
     fall_thread = threading.Thread(target=fall_detection_thread)
     fall_thread.daemon = True
     fall_thread.start()
-    print("✅ Fall detection thread started")
+    print("✅ Fall detection thread started (100Hz, 0.2s interval)")
     
     print("\nPress Ctrl+C to stop\n")
     
@@ -652,13 +679,14 @@ def main():
             # Print status every 5 seconds
             if int(time.time()) % 5 == 0:
                 with sensor_data_lock:
-                    buffer_size = len(raw_sensor_buffer)
+                    raw_buffer_size = len(raw_sensor_buffer)
+                    gait_buffer_size = len(gait_downsampled_buffer)
                 
                 gait_data_size = len(current_gait_data) if current_gait_data else 0
                 
-                print(f"📊 Status - Buffer: {buffer_size}, State: {gait_state}, "
-                      f"Gait count: +{gait_consecutive_count}/-{non_gait_consecutive_count}, "
-                      f"Gait frames: {gait_data_size}, Last frame: {last_prediction_frame}")
+                print(f"📊 Status - Raw(100Hz): {raw_buffer_size}, Gait(30Hz): {gait_buffer_size}, "
+                      f"State: {gait_state}, Gait count: +{gait_consecutive_count}/-{non_gait_consecutive_count}, "
+                      f"Gait frames: {gait_data_size}, Last gait frame: {last_prediction_frame}")
                 
     except KeyboardInterrupt:
         print("\n🛑 Stopping system...")
