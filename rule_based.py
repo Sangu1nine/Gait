@@ -127,7 +127,7 @@ class GaitDetector:
         I_act = (vm > self.global_thr).astype(int)
         
         # ④ 활동 스무딩 (Gaussian 1s 커널)
-        gaussian_kernel = sg.gaussian(self.FS, std=self.FS//2)
+        gaussian_kernel = sg.windows.gaussian(self.FS, std=self.FS//2)
         gaussian_kernel = gaussian_kernel / gaussian_kernel.sum()
         L_act = np.convolve(I_act, gaussian_kernel, mode='same')
         
