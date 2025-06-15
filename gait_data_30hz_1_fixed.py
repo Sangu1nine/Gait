@@ -55,17 +55,8 @@ FALL_THRESHOLD = 0.5  # Fall detection threshold
 GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
-def get_supabase() -> Client:
-    load_dotenv()                           # 1) 환경변수 로드
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
-
-    if not url or not key:                 # 2) 가드
-        raise RuntimeError("Supabase 환경변수 누락")
-
-    return create_client(url, key)          # 3) 초기화
-
-supabase = get_supabase()
+# Global Supabase client variable
+supabase = None
 
 # Global variables for sensor data collection
 sensor_data_lock = threading.Lock()
