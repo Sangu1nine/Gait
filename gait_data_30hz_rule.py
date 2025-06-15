@@ -648,7 +648,7 @@ def sensor_collection_thread():
         try:
             # Read IMU sensor data
             accel_x = accel_ms2(read_data(register_accel_xout_h))
-            accel_y = -accel_ms2(read_data(register_accel_yout_h))
+            accel_y = accel_ms2(read_data(register_accel_yout_h))
             accel_z = accel_ms2(read_data(register_accel_zout_h))
             
             gyro_x = gyro_dps(read_data(register_gyro_xout_h))
