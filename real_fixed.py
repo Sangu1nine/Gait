@@ -1,338 +1,382 @@
-#!/usr/bin/env python3
-"""
-Real-time Gait Detection System - FIXED VERSION
-수정사항:
-1. Y축 음수 부호 제거
-2. 스케일링 비활성화 (문제가 있을 경우)
-3. 모델 출력 디버그 강화
-4. 임계값 조정 옵션 추가
-"""
-
+import os
 import numpy as np
 import pickle
-import json
 import time
+import datetime
 import threading
 from collections import deque
-from datetime import datetime
-import tensorflow as tf
-import smbus
+import json
+from smbus2 import SMBus
 from bitstring import Bits
+import math
+from scipy import signal
+import tensorflow as tf
 
-class RealTimeGaitDetector:
-    def __init__(self, model_path="models/gait_detection/model.tflite", 
-                 scaler_path="scalers/gait_detection/standard_scaler.pkl",
-                 label_encoder_path="scalers/gait_detection/label_encoder.pkl",
-                 thresholds_path="scalers/gait_detection/thresholds.json",
-                 use_scaler=False):  # 스케일러 사용 여부 제어
-        """
-        Initialize real-time gait detection system
-        """
-        self.window_size = 60
-        self.stride = 1
-        self.sampling_rate = 30
-        self.n_features = 6
-        self.use_scaler = use_scaler  # 스케일러 사용 여부
+# ========== 센서 설정 ==========
+bus = SMBus(1)
+DEV_ADDR = 0x68
+
+# 레지스터 주소
+register_gyro_xout_h = 0x43
+register_gyro_yout_h = 0x45
+register_gyro_zout_h = 0x47
+sensitive_gyro = 131.0
+
+register_accel_xout_h = 0x3B
+register_accel_yout_h = 0x3D
+register_accel_zout_h = 0x3F
+sensitive_accel = 16384.0
+
+# ========== 모델 및 전처리 설정 ==========
+MODEL_PATH = "model.tflite"  # TFLite 모델 경로
+SCALER_PATH = "standard_scaler.pkl"  # 또는 "minmax_scaler.pkl"
+ENCODER_PATH = "label_encoder.pkl"
+THRESHOLD = 0.3  # 예측 임계값
+
+# ========== 실시간 예측 설정 ==========
+WINDOW_SIZE = 60  # 2초 (30Hz * 2초)
+SAMPLING_RATE = 30  # 30Hz
+STRIDE = 1  # 1 frame씩 업데이트
+FILTER_ORDER = 4
+CUTOFF_FREQ = 10  # 10Hz 컷오프
+
+class RealTimeGaitPredictor:
+    def __init__(self, model_path, scaler_path, encoder_path, threshold=0.3):
+        """실시간 보행 패턴 예측기 초기화"""
+        self.threshold = threshold
+        self.window_size = WINDOW_SIZE
+        self.sampling_rate = SAMPLING_RATE
         
-        # IMU register addresses
-        self.register_gyro_xout_h = 0x43
-        self.register_gyro_yout_h = 0x45
-        self.register_gyro_zout_h = 0x47
-        self.sensitive_gyro = 131.0
+        # 센서 데이터 윈도우 (60 frames)
+        self.sensor_window = deque(maxlen=self.window_size)
         
-        self.register_accel_xout_h = 0x3B
-        self.register_accel_yout_h = 0x3D
-        self.register_accel_zout_h = 0x3F
-        self.sensitive_accel = 16384.0
+        # 버터워스 필터 설정
+        self.setup_filter()
         
-        self.DEV_ADDR = 0x68
+        # 모델 및 전처리 객체 로드
+        self.load_model_and_preprocessors(model_path, scaler_path, encoder_path)
         
-        # Data buffer
-        self.data_buffer = deque(maxlen=self.window_size)
+        # 예측 결과 저장
+        self.predictions = []
+        self.prediction_lock = threading.Lock()
         
-        # Initialize IMU sensor
-        self.init_imu_sensor()
-        
-        # Load model and preprocessing objects
-        self.load_model_and_preprocessors(model_path, scaler_path, 
-                                        label_encoder_path, thresholds_path)
-        
-        # Variables for real-time data collection
-        self.is_collecting = False
-        self.collection_thread = None
-        
-        print("✅ Real-time gait detection system initialized successfully")
-        print(f"📊 Configuration: window_size={self.window_size}, stride={self.stride}, sampling_rate={self.sampling_rate}Hz")
-        print(f"🔧 Scaler enabled: {self.use_scaler}")
+        print("🚀 실시간 보행 패턴 예측기 초기화 완료")
+        print(f"   - 윈도우 크기: {self.window_size} frames (2초)")
+        print(f"   - 업데이트 주기: {STRIDE} frame (1/30초)")
+        print(f"   - 예측 임계값: {self.threshold}")
+        print(f"   - 필터: Butterworth {FILTER_ORDER}차, {CUTOFF_FREQ}Hz")
     
-    def init_imu_sensor(self):
-        """Initialize IMU sensor (MPU6050) with low-level I2C"""
+    def setup_filter(self):
+        """버터워스 필터 설정"""
+        nyquist = 0.5 * self.sampling_rate
+        normal_cutoff = CUTOFF_FREQ / nyquist
+        self.filter_b, self.filter_a = signal.butter(
+            FILTER_ORDER, normal_cutoff, btype='low', analog=False)
+        
+        # 필터 상태 초기화 (각 센서 채널별)
+        self.filter_zi = [signal.lfilter_zi(self.filter_b, self.filter_a) for _ in range(6)]
+    
+    def apply_filter(self, sensor_data):
+        """실시간 버터워스 필터 적용"""
+        filtered_data = np.zeros_like(sensor_data)
+        
+        for i in range(6):  # 6개 센서 채널
+            filtered_data[i], self.filter_zi[i] = signal.lfilter(
+                self.filter_b, self.filter_a, [sensor_data[i]], zi=self.filter_zi[i])
+        
+        return filtered_data.flatten()
+    
+    def load_model_and_preprocessors(self, model_path, scaler_path, encoder_path):
+        """모델 및 전처리 객체 로드"""
+        print("📁 모델 및 전처리 객체 로딩 중...")
+        
+        # TFLite 모델 로드
         try:
-            self.bus = smbus.SMBus(1)
-            self.bus.write_byte_data(self.DEV_ADDR, 0x6B, 0)
-            print("✅ MPU6050 sensor initialized successfully with I2C bus")
-            self.sensor_available = True
-        except Exception as e:
-            print(f"❌ IMU sensor initialization failed: {e}")
-            print("💡 Switching to simulation mode.")
-            self.sensor_available = False
-    
-    def read_data(self, register):
-        """Read data from IMU register"""
-        high = self.bus.read_byte_data(self.DEV_ADDR, register)
-        low = self.bus.read_byte_data(self.DEV_ADDR, register+1)
-        val = (high << 8) + low
-        return val
-    
-    def twocomplements(self, val):
-        """Convert 2's complement"""
-        s = Bits(uint=val, length=16)
-        return s.int
-    
-    def gyro_dps(self, val):
-        """Convert gyroscope value to degrees/second"""
-        return self.twocomplements(val) / self.sensitive_gyro
-    
-    def accel_ms2(self, val):
-        """Convert acceleration value to m/s²"""
-        return (self.twocomplements(val) / self.sensitive_accel) * 9.80665
-    
-    def load_model_and_preprocessors(self, model_path, scaler_path, 
-                                   label_encoder_path, thresholds_path):
-        """Load model and preprocessing objects"""
-        try:
-            # Load TFLite model
             self.interpreter = tf.lite.Interpreter(model_path=model_path)
             self.interpreter.allocate_tensors()
             
+            # 입력/출력 정보
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
             
-            print(f"✅ TFLite model loaded successfully: {model_path}")
-            
-            # Load StandardScaler (선택적)
-            if self.use_scaler:
-                try:
-                    with open(scaler_path, "rb") as f:
-                        self.scaler = pickle.load(f)
-                    print(f"✅ StandardScaler loaded successfully: {scaler_path}")
-                except Exception as e:
-                    print(f"⚠️ Failed to load StandardScaler: {e}")
-                    print("💡 Disabling scaler")
-                    self.scaler = None
-                    self.use_scaler = False
-            else:
-                print("🔧 Scaler disabled by configuration")
-                self.scaler = None
-            
-            # Load label encoder
-            with open(label_encoder_path, "rb") as f:
-                self.label_encoder = pickle.load(f)
-            print(f"✅ Label encoder loaded successfully: {label_encoder_path}")
-            
-            # Load thresholds with multiple fallback options
-            try:
-                with open(thresholds_path, "r") as f:
-                    thresholds = json.load(f)
-                threshold_values = list(thresholds.values())
-                self.optimal_threshold = np.mean(threshold_values)
-                print(f"✅ Optimal thresholds loaded: {self.optimal_threshold:.3f}")
-            except Exception as e:
-                print(f"⚠️ Failed to load thresholds: {e}")
-                # 더 높은 임계값들로 테스트
-                self.optimal_threshold = 0.5
-                print(f"💡 Using default threshold: {self.optimal_threshold}")
-            
+            print(f"   ✅ TFLite 모델 로드: {model_path}")
+            print(f"      입력 형태: {self.input_details[0]['shape']}")
+            print(f"      출력 형태: {self.output_details[0]['shape']}")
         except Exception as e:
-            print(f"❌ Failed to load model/preprocessing objects: {e}")
+            print(f"   ❌ TFLite 모델 로드 실패: {e}")
+            raise
+        
+        # 스케일러 로드
+        try:
+            with open(scaler_path, 'rb') as f:
+                self.scaler = pickle.load(f)
+            print(f"   ✅ 스케일러 로드: {scaler_path}")
+        except Exception as e:
+            print(f"   ❌ 스케일러 로드 실패: {e}")
+            raise
+        
+        # 라벨 인코더 로드
+        try:
+            with open(encoder_path, 'rb') as f:
+                self.label_encoder = pickle.load(f)
+            print(f"   ✅ 라벨 인코더 로드: {encoder_path}")
+            print(f"      클래스: {self.label_encoder.classes_}")
+        except Exception as e:
+            print(f"   ❌ 라벨 인코더 로드 실패: {e}")
             raise
     
-    def read_imu_data(self):
-        """Read data from IMU sensor - Y축 음수 부호 제거"""
-        if not self.sensor_available:
-            # 더 현실적인 시뮬레이션 데이터
-            accel = [np.random.normal(0, 2) for _ in range(3)]  # 가속도: 평균0, 표준편차2
-            gyro = [np.random.normal(0, 50) for _ in range(3)]   # 자이로: 평균0, 표준편차50
-        else:
-            try:
-                # Y축 음수 부호 제거!
-                accel_x = self.accel_ms2(self.read_data(self.register_accel_xout_h))
-                accel_y = self.accel_ms2(self.read_data(self.register_accel_yout_h))  # 음수 제거
-                accel_z = self.accel_ms2(self.read_data(self.register_accel_zout_h))
-                
-                gyro_x = self.gyro_dps(self.read_data(self.register_gyro_xout_h))
-                gyro_y = self.gyro_dps(self.read_data(self.register_gyro_yout_h))
-                gyro_z = self.gyro_dps(self.read_data(self.register_gyro_zout_h))
-                
-                accel = [accel_x, accel_y, accel_z]
-                gyro = [gyro_x, gyro_y, gyro_z]
-                
-            except Exception as e:
-                print(f"⚠️ Sensor read error: {e}, using simulation data")
-                accel = [np.random.normal(0, 2) for _ in range(3)]
-                gyro = [np.random.normal(0, 50) for _ in range(3)]
+    def preprocess_window(self, window_data):
+        """윈도우 데이터 전처리"""
+        # numpy 배열로 변환
+        window_array = np.array(window_data, dtype=np.float32)
         
-        return accel + gyro
+        # 형태 확인: (60, 6)
+        if window_array.shape != (self.window_size, 6):
+            return None
+        
+        # 3D -> 2D 변환 (스케일링을 위해)
+        window_2d = window_array.reshape(-1, 6)  # (60*1, 6) = (60, 6)
+        
+        # 스케일링 적용
+        window_scaled = self.scaler.transform(window_2d)
+        
+        # 다시 3D로 변환 후 배치 차원 추가
+        window_scaled = window_scaled.reshape(1, self.window_size, 6)  # (1, 60, 6)
+        
+        return window_scaled.astype(np.float32)
     
-    def preprocess_data(self, window_data):
-        """Data preprocessing - 스케일링 선택적 적용"""
-        X_new = np.array(window_data).reshape(1, self.window_size, self.n_features)
-        
-        if self.use_scaler and hasattr(self, 'scaler') and self.scaler is not None:
-            try:
-                n_samples, n_timesteps, n_features = X_new.shape
-                X_2d = X_new.reshape(-1, n_features)
-                X_scaled = self.scaler.transform(X_2d)
-                X_scaled = X_scaled.reshape(X_new.shape)
-                
-                print(f"🔧 Applied scaling")
-                return X_scaled.astype(np.float32)
-                
-            except Exception as e:
-                print(f"⚠️ Scaling failed: {e}, using raw data")
-                return X_new.astype(np.float32)
-        else:
-            print(f"🔧 Using raw data (no scaling)")
-            return X_new.astype(np.float32)
-    
-    def predict_tflite(self, X_preprocessed):
-        """Predict using TFLite model with debug info"""
-        self.interpreter.set_tensor(self.input_details[0]['index'], X_preprocessed)
-        self.interpreter.invoke()
-        output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
-        
-        # 디버그 정보 추가
-        if hasattr(self, 'prediction_count'):
-            self.prediction_count += 1
-        else:
-            self.prediction_count = 1
-            
-        # 처음 몇 번의 예측에서 상세 디버그 정보 출력
-        if self.prediction_count <= 3:
-            print(f"🔍 Debug prediction #{self.prediction_count}:")
-            print(f"    Input shape: {X_preprocessed.shape}")
-            print(f"    Input mean: {np.mean(X_preprocessed):.6f}")
-            print(f"    Input std: {np.std(X_preprocessed):.6f}")
-            print(f"    Input min/max: {np.min(X_preprocessed):.6f}/{np.max(X_preprocessed):.6f}")
-            print(f"    Raw output: {output_data}")
-        
-        return output_data
-    
-    def collect_data_continuously(self):
-        """Continuously collect IMU data (30Hz)"""
-        interval = 1.0 / self.sampling_rate
-        
-        while self.is_collecting:
-            start_time = time.time()
-            
-            sensor_data = self.read_imu_data()
-            self.data_buffer.append(sensor_data)
-            
-            if len(self.data_buffer) == self.window_size:
-                self.perform_prediction()
-            
-            elapsed = time.time() - start_time
-            sleep_time = max(0, interval - elapsed)
-            time.sleep(sleep_time)
-    
-    def perform_prediction(self):
-        """Perform prediction with enhanced debugging"""
+    def predict(self, window_data):
+        """윈도우 데이터로 예측 수행"""
         try:
-            window_data = list(self.data_buffer)
-            current_sample = window_data[-1]
-            accel_x, accel_y, accel_z = current_sample[0], current_sample[1], current_sample[2]
-            gyro_x, gyro_y, gyro_z = current_sample[3], current_sample[4], current_sample[5]
+            # 전처리
+            preprocessed_data = self.preprocess_window(window_data)
+            if preprocessed_data is None:
+                return None, None
             
-            # Preprocessing
-            X_preprocessed = self.preprocess_data(window_data)
+            # TFLite 추론
+            self.interpreter.set_tensor(self.input_details[0]['index'], preprocessed_data)
+            self.interpreter.invoke()
+            prediction_prob = self.interpreter.get_tensor(self.output_details[0]['index'])
             
-            # Prediction
-            y_prob = self.predict_tflite(X_preprocessed)
+            # 확률값 (sigmoid 출력)
+            prob = float(prediction_prob[0][0])
             
-            # 다양한 임계값으로 테스트
-            thresholds_to_test = [0.1, 0.3, 0.5, 0.7, 0.9]
-            predictions = {}
-            for thresh in thresholds_to_test:
-                pred = (y_prob > thresh).astype(int)
-                label = self.label_encoder.inverse_transform(pred.flatten())[0]
-                predictions[thresh] = label
+            # 임계값 적용
+            predicted_label = 1 if prob > self.threshold else 0
+            predicted_class = self.label_encoder.inverse_transform([predicted_label])[0]
             
-            confidence = y_prob[0][0]
-            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            
-            # 기본 임계값으로 예측
-            y_pred = (y_prob > self.optimal_threshold).astype(int)
-            prediction_label = self.label_encoder.inverse_transform(y_pred.flatten())[0]
-            status_icon = "🚶" if prediction_label == "gait" else "🧍"
-            
-            print(f"[{timestamp}] {status_icon} Main prediction: {prediction_label} "
-                  f"(confidence: {confidence:.6f}, threshold: {self.optimal_threshold:.3f})")
-            print(f"    📊 Accel: X={accel_x:+7.3f} Y={accel_y:+7.3f} Z={accel_z:+7.3f} m/s²")
-            print(f"    🔄 Gyro:  X={gyro_x:+7.3f} Y={gyro_y:+7.3f} Z={gyro_z:+7.3f} °/s")
-            
-            # 다양한 임계값 결과 표시
-            thresh_results = " | ".join([f"{thresh}:{predictions[thresh][:4]}" for thresh in thresholds_to_test])
-            print(f"    🎯 Threshold tests: {thresh_results}")
-            
-            # 문제 상황 감지
-            if confidence == 1.0 or confidence == 0.0:
-                print(f"    ⚠️  WARNING: Confidence is exactly {confidence} - model might be saturated!")
-            
-            print()
+            return predicted_class, prob
             
         except Exception as e:
-            print(f"❌ Prediction error: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"예측 오류: {e}")
+            return None, None
     
-    def start_detection(self, show_sensor_details=True):
-        """Start real-time gait detection"""
-        if self.is_collecting:
-            print("⚠️ Detection is already running.")
-            return
+    def add_sensor_data(self, sensor_data):
+        """새로운 센서 데이터 추가 및 예측"""
+        # 필터 적용
+        filtered_data = self.apply_filter(sensor_data)
         
-        print("🎯 Starting real-time gait detection...")
-        print("📋 Legend: 🚶 = Walking, 🧍 = Standing")
-        print("⏹️ Press Ctrl+C to stop.")
+        # 윈도우에 데이터 추가
+        self.sensor_window.append(filtered_data)
         
-        self.is_collecting = True
-        self.collection_thread = threading.Thread(target=self.collect_data_continuously)
-        self.collection_thread.daemon = True
-        self.collection_thread.start()
+        # 윈도우가 가득 찬 경우에만 예측
+        if len(self.sensor_window) == self.window_size:
+            predicted_class, probability = self.predict(list(self.sensor_window))
+            
+            if predicted_class is not None:
+                timestamp = time.time()
+                
+                with self.prediction_lock:
+                    prediction_result = {
+                        'timestamp': timestamp,
+                        'datetime': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                        'predicted_class': predicted_class,
+                        'probability': probability,
+                        'confidence': probability if predicted_class == 'gait' else (1 - probability)
+                    }
+                    self.predictions.append(prediction_result)
+                
+                return prediction_result
         
-        try:
-            while self.is_collecting:
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            self.stop_detection()
+        return None
     
-    def stop_detection(self):
-        """Stop real-time gait detection"""
-        print("\n🛑 Stopping real-time gait detection...")
-        self.is_collecting = False
+    def get_recent_predictions(self, n=10):
+        """최근 n개의 예측 결과 반환"""
+        with self.prediction_lock:
+            return self.predictions[-n:] if len(self.predictions) > n else self.predictions.copy()
+    
+    def save_predictions(self, filename=None):
+        """예측 결과를 JSON 파일로 저장"""
+        if filename is None:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"gait_predictions_{timestamp}.json"
         
-        if self.collection_thread and self.collection_thread.is_alive():
-            self.collection_thread.join(timeout=1.0)
+        with self.prediction_lock:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(self.predictions, f, indent=2, ensure_ascii=False)
         
-        print("✅ Gait detection stopped successfully.")
+        print(f"💾 예측 결과 저장: {filename} ({len(self.predictions)}개 예측)")
 
+# ========== 센서 관련 함수들 ==========
+def read_data(register):
+    """센서 레지스터에서 데이터 읽기"""
+    high = bus.read_byte_data(DEV_ADDR, register)
+    low = bus.read_byte_data(DEV_ADDR, register + 1)
+    val = (high << 8) + low
+    return val
+
+def twocomplements(val):
+    """2의 보수 변환"""
+    s = Bits(uint=val, length=16)
+    return s.int
+
+def gyro_dps(val):
+    """자이로스코프 값을 degrees/second로 변환"""
+    return twocomplements(val) / sensitive_gyro
+
+def accel_ms2(val):
+    """가속도 값을 m/s²로 변환"""
+    return (twocomplements(val) / sensitive_accel) * 9.80665
+
+def read_sensor_data():
+    """IMU 센서에서 6축 데이터 읽기"""
+    # 가속도 데이터
+    accel_x = accel_ms2(read_data(register_accel_xout_h))
+    accel_y = accel_ms2(read_data(register_accel_yout_h))
+    accel_z = accel_ms2(read_data(register_accel_zout_h))
+    
+    # 자이로스코프 데이터
+    gyro_x = gyro_dps(read_data(register_gyro_xout_h))
+    gyro_y = gyro_dps(read_data(register_gyro_yout_h))
+    gyro_z = gyro_dps(read_data(register_gyro_zout_h))
+    
+    # 6축 데이터 반환 (accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z)
+    return np.array([accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z], dtype=np.float32)
+
+# ========== 메인 실행 함수 ==========
 def main():
-    """Main function with configuration options"""
-    print("🤖 Raspberry Pi 4 Real-time Gait Detection System - FIXED VERSION")
+    """메인 실행 함수"""
     print("=" * 60)
+    print("🚶 실시간 보행 패턴 예측 시스템")
+    print("=" * 60)
+    print(f"⚙️  설정:")
+    print(f"   - 샘플링 레이트: {SAMPLING_RATE}Hz")
+    print(f"   - 윈도우 크기: {WINDOW_SIZE} frames (2초)")
+    print(f"   - 업데이트: {STRIDE} frame씩 (1/30초)")
+    print(f"   - 예측 임계값: {THRESHOLD}")
+    print(f"   - 모델: {MODEL_PATH}")
+    print(f"   - 스케일러: {SCALER_PATH}")
+    print()
+    
+    # 파일 존재 확인
+    required_files = [MODEL_PATH, SCALER_PATH, ENCODER_PATH]
+    missing_files = [f for f in required_files if not os.path.exists(f)]
+    
+    if missing_files:
+        print(f"❌ 필수 파일이 없습니다: {missing_files}")
+        print("다음 파일들이 현재 디렉토리에 있는지 확인하세요:")
+        for file in required_files:
+            print(f"   - {file}")
+        return
     
     try:
-        # 스케일러 없이 먼저 테스트
-        print("🔧 Testing without scaler first...")
-        detector = RealTimeGaitDetector(use_scaler=False)
-        detector.start_detection()
+        # 센서 초기화
+        bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
+        print("✅ IMU 센서 초기화 완료")
         
-    except FileNotFoundError as e:
-        print(f"❌ File not found: {e}")
+        # 예측기 초기화
+        predictor = RealTimeGaitPredictor(MODEL_PATH, SCALER_PATH, ENCODER_PATH, THRESHOLD)
+        
+        print("\n🚀 실시간 예측 시작")
+        print("   Ctrl+C를 눌러 종료하세요")
+        print()
+        print("=" * 80)
+        print(f"{'시간':<20} {'예측':<10} {'확률':<8} {'신뢰도':<8} {'상태'}")
+        print("=" * 80)
+        
+        # 타이밍 제어
+        start_time = time.time()
+        sample_count = 0
+        target_interval = 1.0 / SAMPLING_RATE  # 30Hz = 0.0333초 간격
+        
+        prediction_count = 0
+        gait_count = 0
+        
+        while True:
+            current_time = time.time()
+            
+            # 센서 데이터 읽기
+            sensor_data = read_sensor_data()
+            
+            # 예측 수행
+            prediction_result = predictor.add_sensor_data(sensor_data)
+            
+            # 예측 결과 출력
+            if prediction_result:
+                prediction_count += 1
+                
+                pred_class = prediction_result['predicted_class']
+                probability = prediction_result['probability']
+                confidence = prediction_result['confidence']
+                timestamp_str = prediction_result['datetime']
+                
+                if pred_class == 'gait':
+                    gait_count += 1
+                    status = "🚶 보행 중"
+                else:
+                    status = "🛑 비보행"
+                
+                # 결과 출력
+                print(f"{timestamp_str} {pred_class:<10} {probability:.4f}   {confidence:.4f}   {status}")
+                
+                # 10초마다 통계 출력
+                if prediction_count % 300 == 0:  # 30Hz * 10초 = 300개
+                    gait_ratio = gait_count / prediction_count * 100
+                    print(f"\n📊 통계 (최근 10초): 보행 비율 {gait_ratio:.1f}% ({gait_count}/{prediction_count})")
+                    print("=" * 80)
+                    prediction_count = 0
+                    gait_count = 0
+            
+            sample_count += 1
+            
+            # 타이밍 조절 (30Hz 유지)
+            elapsed = time.time() - start_time
+            expected_time = sample_count * target_interval
+            sleep_time = expected_time - elapsed
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+    
+    except KeyboardInterrupt:
+        print("\n\n🛑 실시간 예측 중단됨")
+        
+        # 예측 결과 저장
+        recent_predictions = predictor.get_recent_predictions(100)
+        if recent_predictions:
+            predictor.save_predictions()
+            
+            # 간단한 통계
+            total_predictions = len(recent_predictions)
+            gait_predictions = sum(1 for p in recent_predictions if p['predicted_class'] == 'gait')
+            gait_percentage = gait_predictions / total_predictions * 100
+            
+            print(f"\n📊 세션 통계:")
+            print(f"   총 예측 수: {total_predictions}")
+            print(f"   보행 예측: {gait_predictions} ({gait_percentage:.1f}%)")
+            print(f"   비보행 예측: {total_predictions - gait_predictions} ({100 - gait_percentage:.1f}%)")
+    
     except Exception as e:
-        print(f"❌ System error: {e}")
+        print(f"\n❌ 오류 발생: {e}")
+        import traceback
+        traceback.print_exc()
+    
     finally:
-        print("👋 Exiting program.")
+        # 정리
+        try:
+            bus.close()
+            print("✅ I2C 버스 종료")
+        except:
+            pass
 
 if __name__ == "__main__":
     main()
