@@ -110,7 +110,15 @@ def init_supabase():
     """Initialize Supabase client"""
     global supabase
     try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        # 환경변수 로드
+        load_dotenv()
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_KEY")
+        
+        if not url or not key:
+            raise RuntimeError("Supabase 환경변수 누락 (SUPABASE_URL 또는 SUPABASE_KEY)")
+        
+        supabase = create_client(url, key)
         
         # 실제 인증 테스트
         try:
