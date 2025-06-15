@@ -175,8 +175,15 @@ def init_supabase():
         return False
 
 def load_models():
-    """Load gait and fall detection models"""
+    """Load gait and fall detection models with version compatibility"""
     global gait_interpreter, gait_scaler, fall_interpreter, fall_scalers
+    
+    # Check scikit-learn version
+    try:
+        import sklearn
+        print(f"📦 scikit-learn version: {sklearn.__version__}")
+    except ImportError:
+        print("❌ scikit-learn not installed")
     
     # Load gait detection model
     try:
@@ -185,12 +192,20 @@ def load_models():
             gait_interpreter.allocate_tensors()
             print(f"✅ Gait model loaded: {GAIT_MODEL_PATH}")
         
-        # Load gait scaler
+        # Load gait scaler with version compatibility
         gait_scaler_file = os.path.join(GAIT_SCALER_PATH, "minmax_scaler.pkl")
         if os.path.exists(gait_scaler_file):
-            with open(gait_scaler_file, 'rb') as f:
-                gait_scaler = pickle.load(f)
-            print(f"✅ Gait scaler loaded")
+            try:
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=UserWarning)
+                    with open(gait_scaler_file, 'rb') as f:
+                        gait_scaler = pickle.load(f)
+                print(f"✅ Gait scaler loaded (version compatibility handled)")
+            except Exception as scaler_error:
+                print(f"⚠️ Gait scaler loading failed: {scaler_error}")
+                print("   Continuing without gait scaler - manual scaling may be needed")
+                gait_scaler = None
     except Exception as e:
         print(f"❌ Gait model loading error: {e}")
     
@@ -201,20 +216,47 @@ def load_models():
             fall_interpreter.allocate_tensors()
             print(f"✅ Fall model loaded: {FALL_MODEL_PATH}")
         
-        # Load fall scalers (both minmax and standard)
+        # Load fall scalers (both minmax and standard) with version compatibility
+        scalers_loaded = 0
+        total_scalers = 0
+        
         for sensor in ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ']:
             minmax_file = os.path.join(FALL_SCALER_PATH, f"{sensor}_minmax_scaler.pkl")
             standard_file = os.path.join(FALL_SCALER_PATH, f"{sensor}_standard_scaler.pkl")
             
+            # Load MinMax scaler
             if os.path.exists(minmax_file):
-                with open(minmax_file, 'rb') as f:
-                    fall_scalers[f"{sensor}_minmax"] = pickle.load(f)
+                total_scalers += 1
+                try:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=UserWarning)
+                        with open(minmax_file, 'rb') as f:
+                            fall_scalers[f"{sensor}_minmax"] = pickle.load(f)
+                    scalers_loaded += 1
+                except Exception as e:
+                    print(f"⚠️ Failed to load {sensor}_minmax scaler: {e}")
             
+            # Load Standard scaler
             if os.path.exists(standard_file):
-                with open(standard_file, 'rb') as f:
-                    fall_scalers[f"{sensor}_standard"] = pickle.load(f)
+                total_scalers += 1
+                try:
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings("ignore", category=UserWarning)
+                        with open(standard_file, 'rb') as f:
+                            fall_scalers[f"{sensor}_standard"] = pickle.load(f)
+                    scalers_loaded += 1
+                except Exception as e:
+                    print(f"⚠️ Failed to load {sensor}_standard scaler: {e}")
         
-        print(f"✅ Fall scalers loaded")
+        print(f"✅ Fall scalers loaded: {scalers_loaded}/{total_scalers}")
+        
+        if scalers_loaded == 0:
+            print("⚠️ No fall scalers loaded - fall detection may not work correctly")
+        elif scalers_loaded < total_scalers:
+            print("⚠️ Some fall scalers failed to load - fall detection accuracy may be reduced")
+            
     except Exception as e:
         print(f"❌ Fall model loading error: {e}")
 
