@@ -1,10 +1,13 @@
 """
 보행 및 낙상 감지 IMU 센서 데이터 수집 프로그램 (규칙 기반 보행 감지)
 MODIFIED 2025-01-30: 규칙 기반 보행 감지 + TensorFlow Lite 낙상 감지
+MODIFIED 2025-01-30: 낙상 감지 전처리를 raspberry_fall_detection.py와 동일하게 수정
+- m/s² 단위 사용 (g 단위 변환 제거)
+- Standard → MinMax 스케일러 순서 적용
 Features:
 - 100Hz IMU 센서 데이터 수집 (멀티스레드)
-- 실시간 낙상 감지 (TensorFlow Lite) - 100Hz 데이터 사용
-- 실시간 보행 감지 (규칙 기반) - 30Hz 다운샘플링 데이터 사용
+- 실시간 낙상 감지 (TensorFlow Lite) - 100Hz 데이터 사용, m/s² 단위
+- 실시간 보행 감지 (규칙 기반) - 30Hz 다운샘플링 데이터 사용, g 단위
 - Supabase 직접 업로드
 """
 
@@ -48,7 +51,7 @@ FALL_SCALER_PATH = "scalers/fall_detection"
 FALL_WINDOW_SIZE = 150  # Window size for fall detection model
 SENSOR_HZ = 100  # 센서 데이터 수집 주파수 (100Hz)
 GAIT_TARGET_HZ = 30   # 보행 감지용 다운샘플링 주파수 (30Hz)
-FALL_THRESHOLD = 0.8  # Fall detection threshold (0.5 → 0.8: 더 엄격하게)
+FALL_THRESHOLD = 0.5  # Fall detection threshold
 
 # State transition parameters
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
@@ -701,46 +704,54 @@ def sensor_collection_thread():
             time.sleep(0.001)
 
 def preprocess_for_fall(sensor_window):
-    """Preprocess sensor data for fall detection"""
+    """
+    Preprocess sensor data for fall detection
+    Following raspberry_fall_detection.py preprocessing method
+    - Use m/s² units for accelerometer (NOT g units)
+    - Apply Standard scaling first, then MinMax scaling
+    """
     if not fall_scalers:
         return None
     
     try:
-        # Process each sensor channel
+        # Process each sensor channel - Keep m/s² units for accelerometer
         processed_data = []
         
         for data in sensor_window:
-            # Apply transformations for fall detection
-            acc_x = data['accel_x'] / 9.80665
-            acc_y = data['accel_y'] / 9.80665  # Sign change
-            acc_z = data['accel_z'] / 9.80665
-            gyr_x = data['gyro_x']
-            gyr_y = data['gyro_y']
-            gyr_z = data['gyro_z']
+            # Keep accelerometer data in m/s² units (do NOT convert to g)
+            acc_x = data['accel_x']  # m/s²
+            acc_y = data['accel_y']  # m/s²
+            acc_z = data['accel_z']  # m/s²
+            gyr_x = data['gyro_x']   # degrees/s
+            gyr_y = data['gyro_y']   # degrees/s
+            gyr_z = data['gyro_z']   # degrees/s
             
             processed_data.append([acc_x, acc_y, acc_z, gyr_x, gyr_y, gyr_z])
         
         # Convert to numpy array
         sensor_array = np.array(processed_data, dtype=np.float32)
         
-        # Apply scalers for each sensor channel
+        # Apply scalers following raspberry_fall_detection.py approach
+        # Standard scaling FIRST, then MinMax scaling
         sensor_names = ['AccX', 'AccY', 'AccZ', 'GyrX', 'GyrY', 'GyrZ']
         scaled_data = np.zeros_like(sensor_array)
         
         for i, sensor_name in enumerate(sensor_names):
-            # Apply MinMax scaler first if available
-            if f"{sensor_name}_minmax" in fall_scalers:
-                scaled_data[:, i] = fall_scalers[f"{sensor_name}_minmax"].transform(
-                    sensor_array[:, i].reshape(-1, 1)
-                ).flatten()
-            else:
-                scaled_data[:, i] = sensor_array[:, i]
+            val = sensor_array[:, i]
             
-            # Apply Standard scaler after MinMax if available
+            # Apply Standard scaler FIRST if available
             if f"{sensor_name}_standard" in fall_scalers:
-                scaled_data[:, i] = fall_scalers[f"{sensor_name}_standard"].transform(
-                    scaled_data[:, i].reshape(-1, 1)
-                ).flatten()
+                scaler = fall_scalers[f"{sensor_name}_standard"]
+                # Apply standard scaling: (x - mean) / std
+                val = (val - scaler.mean_[0]) / scaler.scale_[0]
+            
+            # Apply MinMax scaler SECOND if available
+            if f"{sensor_name}_minmax" in fall_scalers:
+                scaler = fall_scalers[f"{sensor_name}_minmax"]
+                # Apply minmax scaling: x * scale + min
+                val = val * scaler.scale_[0] + scaler.min_[0]
+            
+            scaled_data[:, i] = val
         
         return scaled_data.reshape(1, FALL_WINDOW_SIZE, 6)
     except Exception as e:
