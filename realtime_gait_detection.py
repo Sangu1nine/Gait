@@ -4,6 +4,7 @@ Real-time Gait Detection System - Raspberry Pi 4
 30Hz IMU sensor, 60 window, 1 stride
 
 MODIFIED [2024-12-19]: Initial implementation - Real-time IMU data collection and gait detection
+MODIFIED [2024-12-19]: Updated IMU sensor data reading with low-level I2C communication
 """
 
 import numpy as np
@@ -14,9 +15,8 @@ import threading
 from collections import deque
 from datetime import datetime
 import tensorflow as tf
-import board
-import busio
-import adafruit_mpu6050
+import smbus
+from bitstring import Bits
 
 class RealTimeGaitDetector:
     def __init__(self, model_path="models/gait_detection/model.tflite", 
@@ -37,6 +37,19 @@ class RealTimeGaitDetector:
         self.sampling_rate = 30  # 30Hz
         self.n_features = 6    # 3-axis accelerometer + 3-axis gyroscope
         
+        # IMU register addresses
+        self.register_gyro_xout_h = 0x43
+        self.register_gyro_yout_h = 0x45
+        self.register_gyro_zout_h = 0x47
+        self.sensitive_gyro = 131.0
+        
+        self.register_accel_xout_h = 0x3B
+        self.register_accel_yout_h = 0x3D
+        self.register_accel_zout_h = 0x3F
+        self.sensitive_accel = 16384.0
+        
+        self.DEV_ADDR = 0x68  # MPU6050 I2C address
+        
         # Data buffer (stores 60 samples)
         self.data_buffer = deque(maxlen=self.window_size)
         
@@ -55,22 +68,41 @@ class RealTimeGaitDetector:
         print(f"📊 Configuration: window_size={self.window_size}, stride={self.stride}, sampling_rate={self.sampling_rate}Hz")
     
     def init_imu_sensor(self):
-        """Initialize IMU sensor (MPU6050)"""
+        """Initialize IMU sensor (MPU6050) with low-level I2C"""
         try:
-            # Initialize I2C interface
-            i2c = busio.I2C(board.SCL, board.SDA)
-            self.mpu = adafruit_mpu6050.MPU6050(i2c)
+            # Initialize I2C bus
+            self.bus = smbus.SMBus(1)  # Use I2C bus 1
             
-            # Configure sensor settings
-            self.mpu.accelerometer_range = adafruit_mpu6050.Range.RANGE_4_G
-            self.mpu.gyro_range = adafruit_mpu6050.GyroRange.RANGE_500_DPS
+            # Wake up MPU6050 (reset sleep mode)
+            self.bus.write_byte_data(self.DEV_ADDR, 0x6B, 0)
             
-            print("✅ MPU6050 sensor initialized successfully")
+            print("✅ MPU6050 sensor initialized successfully with I2C bus")
+            self.sensor_available = True
             
         except Exception as e:
             print(f"❌ IMU sensor initialization failed: {e}")
             print("💡 Switching to simulation mode.")
-            self.mpu = None
+            self.sensor_available = False
+    
+    def read_data(self, register):
+        """Read data from IMU register"""
+        high = self.bus.read_byte_data(self.DEV_ADDR, register)
+        low = self.bus.read_byte_data(self.DEV_ADDR, register+1)
+        val = (high << 8) + low
+        return val
+    
+    def twocomplements(self, val):
+        """Convert 2's complement"""
+        s = Bits(uint=val, length=16)
+        return s.int
+    
+    def gyro_dps(self, val):
+        """Convert gyroscope value to degrees/second"""
+        return self.twocomplements(val) / self.sensitive_gyro
+    
+    def accel_ms2(self, val):
+        """Convert acceleration value to m/s²"""
+        return (self.twocomplements(val) / self.sensitive_accel) * 9.80665
     
     def load_model_and_preprocessors(self, model_path, scaler_path, 
                                    label_encoder_path, thresholds_path):
@@ -111,17 +143,31 @@ class RealTimeGaitDetector:
             raise
     
     def read_imu_data(self):
-        """Read data from IMU sensor"""
-        if self.mpu is None:
+        """Read data from IMU sensor with proper preprocessing"""
+        if not self.sensor_available:
             # Simulation data (for testing)
             accel = [np.random.normal(0, 1) for _ in range(3)]
             gyro = [np.random.normal(0, 1) for _ in range(3)]
         else:
-            # Real sensor data
-            accel = list(self.mpu.acceleration)  # m/s²
-            gyro = list(self.mpu.gyro)          # rad/s
+            try:
+                # Read real sensor data with proper unit conversion
+                accel_x = self.accel_ms2(self.read_data(self.register_accel_xout_h))
+                accel_y = -self.accel_ms2(self.read_data(self.register_accel_yout_h))  # Note: negative sign
+                accel_z = self.accel_ms2(self.read_data(self.register_accel_zout_h))
+                
+                gyro_x = self.gyro_dps(self.read_data(self.register_gyro_xout_h))
+                gyro_y = self.gyro_dps(self.read_data(self.register_gyro_yout_h))
+                gyro_z = self.gyro_dps(self.read_data(self.register_gyro_zout_h))
+                
+                accel = [accel_x, accel_y, accel_z]
+                gyro = [gyro_x, gyro_y, gyro_z]
+                
+            except Exception as e:
+                print(f"⚠️ Sensor read error: {e}, using simulation data")
+                accel = [np.random.normal(0, 1) for _ in range(3)]
+                gyro = [np.random.normal(0, 1) for _ in range(3)]
         
-        return accel + gyro  # Return 6 features
+        return accel + gyro  # Return 6 features: [accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z]
     
     def preprocess_data(self, window_data):
         """Data preprocessing (refer to README.md)"""
