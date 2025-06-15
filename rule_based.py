@@ -76,7 +76,7 @@ class GaitDetector:
         self.frame_labels = collections.deque(maxlen=self.WIN)  # 각 프레임 라벨
         self.state_counter = 0  # 현재 상태 지속 프레임 수
         
-        print(f"보행 감지 시스템 초기화 완료 (샘플링: {self.FS}Hz, 윈도우: {self.WIN}프레임)")
+        print(f"Gait detection system initialized (Sampling: {self.FS}Hz, Window: {self.WIN} frames)")
     
     def process_frame(self, accel_data: np.ndarray) -> Tuple[str, str, float]:
         """
@@ -194,10 +194,10 @@ class GaitDetector:
         if self.state_counter >= self.WIN:  # 2초 지속
             if current_frame_label == "gait" and self.current_state == "non-gait":
                 self.current_state = "gait"
-                print(f"상태 변경: non-gait → gait (프레임 {len(self.frame_labels)})")
+                print(f"State changed: non-gait → gait (frame {len(self.frame_labels)})")
             elif current_frame_label == "non-gait" and self.current_state == "gait":
                 self.current_state = "non-gait"
-                print(f"상태 변경: gait → non-gait (프레임 {len(self.frame_labels)})")
+                print(f"State changed: gait → non-gait (frame {len(self.frame_labels)})")
 
 def main():
     """메인 실행 함수"""
@@ -206,8 +206,8 @@ def main():
         sensor = MPU6050()
         detector = GaitDetector(sampling_rate=30)
         
-        print("보행 감지 시작... (Ctrl+C로 종료)")
-        print("형식: [상태] 프레임라벨 (신뢰도) | 가속도값")
+        print("Gait detection started... (Ctrl+C to exit)")
+        print("Format: [state] frame_label (confidence) | acceleration_values")
         
         frame_count = 0
         start_time = time.time()
@@ -221,12 +221,12 @@ def main():
             # 보행 감지 처리
             state, label, confidence = detector.process_frame(accel)
             
-            # 결과 출력 (매 10프레임마다)
-            if frame_count % 10 == 0:
-                elapsed = time.time() - start_time
-                print(f"[{state:8s}] {label:8s} ({confidence:.2f}) | "
-                      f"a=({accel[0]:+.3f}, {accel[1]:+.3f}, {accel[2]:+.3f}) | "
-                      f"t={elapsed:.1f}s")
+            # 결과 출력 (매 프레임마다)
+            elapsed = time.time() - start_time
+            frame_time = frame_count * 0.033  # 30Hz = 0.033초/프레임
+            print(f"[{state:8s}] {label:8s} ({confidence:.2f}) | "
+                  f"a=({accel[0]:+.3f}, {accel[1]:+.3f}, {accel[2]:+.3f}) | "
+                  f"f={frame_count:4d} t={frame_time:.2f}s | cnt={detector.state_counter}/60")
             
             frame_count += 1
             
@@ -236,9 +236,9 @@ def main():
             time.sleep(sleep_time)
             
     except KeyboardInterrupt:
-        print("\n보행 감지 종료")
+        print("\nGait detection terminated")
     except Exception as e:
-        print(f"오류 발생: {e}")
+        print(f"Error occurred: {e}")
 
 if __name__ == "__main__":
     main()
