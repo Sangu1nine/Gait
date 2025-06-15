@@ -69,21 +69,21 @@ class GaitDetector:
         self.analysis_window = int(2 * self.FS)     # 60프레임 (2초) - 기본 분석
         self.decision_window = int(3 * self.FS)     # 90프레임 (3초) - 의사결정
         
-        # 알고리즘 파라미터 (덜 예민하게 조정)
-        self.global_thr = 0.07  # g (0.05 → 0.07: 더 큰 움직임 요구)
+        # 알고리즘 파라미터 (덜 엄격하게 조정)
+        self.global_thr = 0.05  # g (더 작은 움직임도 감지)
         self.peak_thr = 0.40    # g
         
         # 통합 필터 시스템
         self.lpf_gravity = sg.butter(4, 0.25/(self.FS/2), output='sos')    # 중력 분리
         self.lpf_dynamic = sg.butter(4, 6.0/(self.FS/2), output='sos')     # 동적 가속도 노이즈 제거
         
-        # 통합 상태별 임계값 (덜 예민하게 조정)
+        # 통합 상태별 임계값 (덜 엄격하게 조정)
         self.thresholds = {
-            'gait_start': 0.83,      # non-gait → gait: 83% (50/60 프레임) - 더 엄격
-            'gait_maintain': 0.55,   # gait 유지: 55% - 약간 낮춤
-            'gait_end': 0.25,        # gait → non-gait: 25% (75% non-gait) - 유지
-            'confidence_gait': 0.4,  # gait 상태에서 낮은 신뢰도 허용
-            'confidence_non_gait': 0.7  # non-gait 상태에서 더 높은 신뢰도 요구 (0.6 → 0.7)
+            'gait_start': 0.75,      # non-gait → gait: 75% (45/60 프레임) - 완화
+            'gait_maintain': 0.50,   # gait 유지: 50% - 더 완화
+            'gait_end': 0.30,        # gait → non-gait: 30% (70% non-gait) - 약간 완화
+            'confidence_gait': 0.35, # gait 상태에서 더 낮은 신뢰도 허용
+            'confidence_non_gait': 0.6  # non-gait 상태에서 신뢰도 요구 완화
         }
         
         # 히스테리시스 설정
@@ -178,18 +178,18 @@ class GaitDetector:
         I_act = (vm > self.global_thr).astype(int)
         activity_ratio = I_act.mean()
         
-        if activity_ratio < 0.5:  # 활동이 부족하면 바로 non-gait (0.4 → 0.5)
+        if activity_ratio < 0.4:  # 활동이 부족하면 바로 non-gait (완화)
             return 0.1
         
-        # 조건 1: 피크 강도 검사 (상태별 다른 기준)
+        # 조건 1: 피크 강도 검사 (상태별 다른 기준, 더 완화)
         peak_ratio = (vm > self.peak_thr).mean()
         if self.current_state == "gait":
-            # gait 상태: 더 관대한 기준
-            if peak_ratio <= 0.05:  # 5%까지 허용
+            # gait 상태: 매우 관대한 기준
+            if peak_ratio <= 0.08:  # 8%까지 허용 (5% → 8%)
                 confidence += 0.4
         else:
-            # non-gait 상태: 엄격한 기준
-            if peak_ratio <= 0.025:  # 2.5%
+            # non-gait 상태: 완화된 기준
+            if peak_ratio <= 0.04:  # 4% (2.5% → 4%)
                 confidence += 0.4
         
         # 조건 2: 주파수 분석
@@ -202,13 +202,13 @@ class GaitDetector:
                 peak_power = pxx[peak_idx]
                 total_power = pxx.sum()
                 
-                # 주파수 범위 (덜 예민하게 조정)
-                freq_range = (0.7, 3.2) if self.current_state == "gait" else (0.9, 2.8)
+                # 주파수 범위 (더 넓게 완화)
+                freq_range = (0.6, 3.5) if self.current_state == "gait" else (0.8, 3.0)
                 if freq_range[0] <= f_peak <= freq_range[1]:
                     confidence += 0.3
                 
-                # 피크 파워 비율 (더 엄격하게 조정)
-                power_threshold = 0.15 if self.current_state == "gait" else 0.18
+                # 피크 파워 비율 (완화)
+                power_threshold = 0.12 if self.current_state == "gait" else 0.15
                 if peak_power >= power_threshold * total_power:
                     confidence += 0.3
                     
