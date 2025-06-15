@@ -98,31 +98,80 @@ def accel_ms2(val):
     return (twocomplements(val)/sensitive_accel) * 9.80665
 
 def init_supabase():
-    """Initialize Supabase client"""
+    """Initialize Supabase client with detailed debugging"""
     global supabase
     try:
+        print("🔍 Supabase 초기화 시작...")
+        
+        # .env 파일 존재 확인
+        env_path = ".env"
+        if os.path.exists(env_path):
+            print(f"✅ .env 파일 발견: {os.path.abspath(env_path)}")
+        else:
+            print(f"⚠️ .env 파일이 현재 디렉토리에 없습니다: {os.path.abspath(env_path)}")
+            print(f"   현재 작업 디렉토리: {os.getcwd()}")
+            print(f"   디렉토리 내용: {os.listdir('.')}")
+        
         # 환경변수 로드
         load_dotenv()
         url = os.getenv("SUPABASE_URL")
         key = os.getenv("SUPABASE_KEY")
         
+        # 환경변수 디버깅 정보
+        print(f"🔗 SUPABASE_URL: {'✅ 로드됨' if url else '❌ 없음'}")
+        if url:
+            print(f"   URL: {url}")
+        print(f"🔑 SUPABASE_KEY: {'✅ 로드됨' if key else '❌ 없음'}")
+        if key:
+            print(f"   Key prefix: {key[:20]}...")
+        
         if not url or not key:
+            print("❌ 환경변수가 올바르게 로드되지 않았습니다.")
+            print("   다음을 확인해주세요:")
+            print("   1. .env 파일이 스크립트와 같은 디렉토리에 있는지")
+            print("   2. .env 파일에 SUPABASE_URL=your_url 형식으로 작성되어 있는지")
+            print("   3. .env 파일에 SUPABASE_KEY=your_key 형식으로 작성되어 있는지")
             raise RuntimeError("Supabase 환경변수 누락 (SUPABASE_URL 또는 SUPABASE_KEY)")
         
+        print("🔄 Supabase 클라이언트 생성 중...")
         supabase = create_client(url, key)
+        print("✅ Supabase 클라이언트 생성 성공")
         
-        # 실제 인증 테스트
+        # 네트워크 연결 테스트
+        print("🌐 네트워크 연결 테스트 중...")
+        import requests
+        try:
+            response = requests.get(f"{url}/rest/v1/", headers={"apikey": key}, timeout=10)
+            print(f"✅ 네트워크 연결 성공 (HTTP {response.status_code})")
+        except requests.exceptions.ConnectionError:
+            print("❌ 네트워크 연결 실패 - 인터넷 연결을 확인해주세요")
+            return False
+        except requests.exceptions.Timeout:
+            print("❌ 연결 시간 초과 - 네트워크가 느리거나 불안정합니다")
+            return False
+        except Exception as net_error:
+            print(f"⚠️ 네트워크 테스트 중 오류: {net_error}")
+        
+        # Supabase 인증 테스트
+        print("🔐 Supabase 인증 테스트 중...")
         try:
             # 간단한 테스트 쿼리 실행
             response = supabase.table('fall_history').select('count').limit(1).execute()
-            print("✅ Supabase initialized and authenticated successfully")
+            print("✅ Supabase 인증 성공!")
+            print("✅ Supabase 초기화 완료")
             return True
         except Exception as auth_error:
-            print(f"❌ Supabase authentication failed: {auth_error}")
+            print(f"❌ Supabase 인증 실패: {auth_error}")
+            print("   다음을 확인해주세요:")
+            print("   1. API 키가 올바른지")
+            print("   2. 프로젝트 URL이 정확한지")
+            print("   3. fall_history 테이블이 존재하는지")
+            print("   4. API 키에 해당 테이블 접근 권한이 있는지")
             return False
             
     except Exception as e:
-        print(f"❌ Supabase initialization failed: {e}")
+        print(f"❌ Supabase 초기화 실패: {e}")
+        print(f"   오류 타입: {type(e).__name__}")
         return False
 
 def load_models():
