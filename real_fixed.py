@@ -60,11 +60,11 @@ class RealTimeGaitPredictor:
         self.predictions = []
         self.prediction_lock = threading.Lock()
         
-        print("🚀 실시간 보행 패턴 예측기 초기화 완료")
-        print(f"   - 윈도우 크기: {self.window_size} frames (2초)")
-        print(f"   - 업데이트 주기: {STRIDE} frame (1/30초)")
-        print(f"   - 예측 임계값: {self.threshold}")
-        print(f"   - 필터: Butterworth {FILTER_ORDER}차, {CUTOFF_FREQ}Hz")
+        print("🚀 Real-time gait pattern predictor initialized successfully")
+        print(f"   - Window size: {self.window_size} frames (2 seconds)")
+        print(f"   - Update interval: Every {STRIDE} frame (1/30 second)")
+        print(f"   - Prediction threshold: {self.threshold}")
+        print(f"   - Filter: Butterworth {FILTER_ORDER}th order, {CUTOFF_FREQ}Hz")
     
     def setup_filter(self):
         """버터워스 필터 설정"""
@@ -88,41 +88,41 @@ class RealTimeGaitPredictor:
     
     def load_model_and_preprocessors(self, model_path, scaler_path, encoder_path):
         """모델 및 전처리 객체 로드"""
-        print("📁 모델 및 전처리 객체 로딩 중...")
+        print("📁 Loading model and preprocessing objects...")
         
-        # TFLite 모델 로드
+        # Load TFLite model
         try:
             self.interpreter = tf.lite.Interpreter(model_path=model_path)
             self.interpreter.allocate_tensors()
             
-            # 입력/출력 정보
+            # Input/output information
             self.input_details = self.interpreter.get_input_details()
             self.output_details = self.interpreter.get_output_details()
             
-            print(f"   ✅ TFLite 모델 로드: {model_path}")
-            print(f"      입력 형태: {self.input_details[0]['shape']}")
-            print(f"      출력 형태: {self.output_details[0]['shape']}")
+            print(f"   ✅ TFLite model loaded: {model_path}")
+            print(f"      Input shape: {self.input_details[0]['shape']}")
+            print(f"      Output shape: {self.output_details[0]['shape']}")
         except Exception as e:
-            print(f"   ❌ TFLite 모델 로드 실패: {e}")
+            print(f"   ❌ TFLite model loading failed: {e}")
             raise
         
-        # 스케일러 로드
+        # Load scaler
         try:
             with open(scaler_path, 'rb') as f:
                 self.scaler = pickle.load(f)
-            print(f"   ✅ 스케일러 로드: {scaler_path}")
+            print(f"   ✅ Scaler loaded: {scaler_path}")
         except Exception as e:
-            print(f"   ❌ 스케일러 로드 실패: {e}")
+            print(f"   ❌ Scaler loading failed: {e}")
             raise
         
-        # 라벨 인코더 로드
+        # Load label encoder
         try:
             with open(encoder_path, 'rb') as f:
                 self.label_encoder = pickle.load(f)
-            print(f"   ✅ 라벨 인코더 로드: {encoder_path}")
-            print(f"      클래스: {self.label_encoder.classes_}")
+            print(f"   ✅ Label encoder loaded: {encoder_path}")
+            print(f"      Classes: {self.label_encoder.classes_}")
         except Exception as e:
-            print(f"   ❌ 라벨 인코더 로드 실패: {e}")
+            print(f"   ❌ Label encoder loading failed: {e}")
             raise
     
     def preprocess_window(self, window_data):
@@ -168,7 +168,7 @@ class RealTimeGaitPredictor:
             return predicted_class, prob
             
         except Exception as e:
-            print(f"예측 오류: {e}")
+            print(f"Prediction error: {e}")
             return None, None
     
     def add_sensor_data(self, sensor_data):
@@ -215,7 +215,7 @@ class RealTimeGaitPredictor:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.predictions, f, indent=2, ensure_ascii=False)
         
-        print(f"💾 예측 결과 저장: {filename} ({len(self.predictions)}개 예측)")
+        print(f"💾 Prediction results saved: {filename} ({len(self.predictions)} predictions)")
 
 # ========== 센서 관련 함수들 ==========
 def read_data(register):
@@ -255,91 +255,162 @@ def read_sensor_data():
 
 # ========== 메인 실행 함수 ==========
 def main():
-    """메인 실행 함수"""
+    """Main execution function"""
     print("=" * 60)
-    print("🚶 실시간 보행 패턴 예측 시스템")
+    print("🚶 Real-time Gait Pattern Prediction System")
     print("=" * 60)
-    print(f"⚙️  설정:")
-    print(f"   - 샘플링 레이트: {SAMPLING_RATE}Hz")
-    print(f"   - 윈도우 크기: {WINDOW_SIZE} frames (2초)")
-    print(f"   - 업데이트: {STRIDE} frame씩 (1/30초)")
-    print(f"   - 예측 임계값: {THRESHOLD}")
-    print(f"   - 모델: {MODEL_PATH}")
-    print(f"   - 스케일러: {SCALER_PATH}")
+    print(f"⚙️  Configuration:")
+    print(f"   - Sampling Rate: {SAMPLING_RATE}Hz")
+    print(f"   - Window Size: {WINDOW_SIZE} frames (2 seconds)")
+    print(f"   - Update: Every {STRIDE} frame (1/30 second)")
+    print(f"   - Prediction Threshold: {THRESHOLD}")
+    print(f"   - Model: {MODEL_PATH}")
+    print(f"   - Scaler: {SCALER_PATH}")
     print()
     
-    # 파일 존재 확인
+    # Display options
+    print("📊 Display Options:")
+    print("   1. Prediction results only")
+    print("   2. Sensor values only")
+    print("   3. Both prediction results and sensor values")
+    
+    while True:
+        try:
+            choice = input("\nSelect option (1-3): ").strip()
+            if choice in ['1', '2', '3']:
+                display_mode = int(choice)
+                break
+            else:
+                print("❌ Please select 1, 2, or 3.")
+        except KeyboardInterrupt:
+            print("\nProgram terminated.")
+            return
+        except:
+            print("❌ Please enter a valid number.")
+    
+    # Check file existence
     required_files = [MODEL_PATH, SCALER_PATH, ENCODER_PATH]
     missing_files = [f for f in required_files if not os.path.exists(f)]
     
-    if missing_files:
-        print(f"❌ 필수 파일이 없습니다: {missing_files}")
-        print("다음 파일들이 현재 디렉토리에 있는지 확인하세요:")
+    if missing_files and display_mode != 2:  # No model files needed for sensor-only mode
+        print(f"❌ Required files missing: {missing_files}")
+        print("Please ensure the following files exist in the current directory:")
         for file in required_files:
             print(f"   - {file}")
         return
     
     try:
-        # 센서 초기화
+        # Initialize sensor
         bus.write_byte_data(DEV_ADDR, 0x6B, 0b00000000)
-        print("✅ IMU 센서 초기화 완료")
+        print("✅ IMU sensor initialized successfully")
         
-        # 예측기 초기화
-        predictor = RealTimeGaitPredictor(MODEL_PATH, SCALER_PATH, ENCODER_PATH, THRESHOLD)
+        # Initialize predictor (except for sensor-only mode)
+        predictor = None
+        if display_mode != 2:
+            predictor = RealTimeGaitPredictor(MODEL_PATH, SCALER_PATH, ENCODER_PATH, THRESHOLD)
         
-        print("\n🚀 실시간 예측 시작")
-        print("   Ctrl+C를 눌러 종료하세요")
+        print(f"\n🚀 Starting real-time data collection (Mode {display_mode})")
+        print("   Press Ctrl+C to stop")
         print()
-        print("=" * 80)
-        print(f"{'시간':<20} {'예측':<10} {'확률':<8} {'신뢰도':<8} {'상태'}")
-        print("=" * 80)
         
-        # 타이밍 제어
+        # Display headers
+        if display_mode == 1:
+            print("=" * 80)
+            print(f"{'Time':<20} {'Predict':<10} {'Prob':<8} {'Conf':<8} {'Status'}")
+            print("=" * 80)
+        elif display_mode == 2:
+            print("=" * 120)
+            print(f"{'Time':<20} {'AccX':<8} {'AccY':<8} {'AccZ':<8} {'GyroX':<8} {'GyroY':<8} {'GyroZ':<8} {'Filtered Data'}")
+            print("=" * 120)
+        else:  # display_mode == 3
+            print("=" * 140)
+            print(f"{'Time':<20} {'AccX':<8} {'AccY':<8} {'AccZ':<8} {'GyroX':<8} {'GyroY':<8} {'GyroZ':<8} {'Predict':<8} {'Prob':<8} {'Status'}")
+            print("=" * 140)
+        
+        # Timing control
         start_time = time.time()
         sample_count = 0
-        target_interval = 1.0 / SAMPLING_RATE  # 30Hz = 0.0333초 간격
+        target_interval = 1.0 / SAMPLING_RATE  # 30Hz = 0.0333 second interval
         
         prediction_count = 0
         gait_count = 0
         
         while True:
             current_time = time.time()
+            timestamp_str = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
             
-            # 센서 데이터 읽기
+            # Read sensor data
             sensor_data = read_sensor_data()
             
-            # 예측 수행
-            prediction_result = predictor.add_sensor_data(sensor_data)
+            # Process by mode
+            if display_mode == 1:
+                # Display prediction results only
+                prediction_result = predictor.add_sensor_data(sensor_data)
+                
+                if prediction_result:
+                    prediction_count += 1
+                    
+                    pred_class = prediction_result['predicted_class']
+                    probability = prediction_result['probability']
+                    confidence = prediction_result['confidence']
+                    
+                    if pred_class == 'gait':
+                        gait_count += 1
+                        status = "🚶 Walking"
+                    else:
+                        status = "🛑 Non-gait"
+                    
+                    print(f"{timestamp_str} {pred_class:<10} {probability:.4f}   {confidence:.4f}   {status}")
+                    
+                    # Show statistics every 10 seconds
+                    if prediction_count % 300 == 0:
+                        gait_ratio = gait_count / prediction_count * 100
+                        print(f"\n📊 Statistics (Last 10 sec): Gait ratio {gait_ratio:.1f}% ({gait_count}/{prediction_count})")
+                        print("=" * 80)
+                        prediction_count = 0
+                        gait_count = 0
             
-            # 예측 결과 출력
-            if prediction_result:
-                prediction_count += 1
+            elif display_mode == 2:
+                # Display sensor values only
+                # Create temporary predictor to show filtered data
+                if not hasattr(main, 'temp_predictor'):
+                    main.temp_predictor = RealTimeGaitPredictor(MODEL_PATH, SCALER_PATH, ENCODER_PATH, THRESHOLD)
                 
-                pred_class = prediction_result['predicted_class']
-                probability = prediction_result['probability']
-                confidence = prediction_result['confidence']
-                timestamp_str = prediction_result['datetime']
+                filtered_data = main.temp_predictor.apply_filter(sensor_data)
                 
-                if pred_class == 'gait':
-                    gait_count += 1
-                    status = "🚶 보행 중"
+                print(f"{timestamp_str} "
+                      f"{sensor_data[0]:>7.3f} {sensor_data[1]:>7.3f} {sensor_data[2]:>7.3f} "
+                      f"{sensor_data[3]:>7.2f} {sensor_data[4]:>7.2f} {sensor_data[5]:>7.2f} "
+                      f"| {filtered_data[0]:>6.3f} {filtered_data[1]:>6.3f} {filtered_data[2]:>6.3f} "
+                      f"{filtered_data[3]:>6.2f} {filtered_data[4]:>6.2f} {filtered_data[5]:>6.2f}")
+            
+            else:  # display_mode == 3
+                # Display both prediction results and sensor values
+                prediction_result = predictor.add_sensor_data(sensor_data)
+                
+                # Output sensor values every frame
+                sensor_str = f"{sensor_data[0]:>7.3f} {sensor_data[1]:>7.3f} {sensor_data[2]:>7.3f} {sensor_data[3]:>7.2f} {sensor_data[4]:>7.2f} {sensor_data[5]:>7.2f}"
+                
+                if prediction_result:
+                    prediction_count += 1
+                    
+                    pred_class = prediction_result['predicted_class']
+                    probability = prediction_result['probability']
+                    
+                    if pred_class == 'gait':
+                        gait_count += 1
+                        status = "🚶 Walking"
+                    else:
+                        status = "🛑 Non-gait"
+                    
+                    print(f"{timestamp_str} {sensor_str} {pred_class:<8} {probability:.4f}   {status}")
                 else:
-                    status = "🛑 비보행"
-                
-                # 결과 출력
-                print(f"{timestamp_str} {pred_class:<10} {probability:.4f}   {confidence:.4f}   {status}")
-                
-                # 10초마다 통계 출력
-                if prediction_count % 300 == 0:  # 30Hz * 10초 = 300개
-                    gait_ratio = gait_count / prediction_count * 100
-                    print(f"\n📊 통계 (최근 10초): 보행 비율 {gait_ratio:.1f}% ({gait_count}/{prediction_count})")
-                    print("=" * 80)
-                    prediction_count = 0
-                    gait_count = 0
+                    # Output sensor values only when no prediction results
+                    print(f"{timestamp_str} {sensor_str} {'Prep':<8} {'----'}     {'Collecting data'}")
             
             sample_count += 1
             
-            # 타이밍 조절 (30Hz 유지)
+            # Timing adjustment (maintain 30Hz)
             elapsed = time.time() - start_time
             expected_time = sample_count * target_interval
             sleep_time = expected_time - elapsed
@@ -348,33 +419,34 @@ def main():
                 time.sleep(sleep_time)
     
     except KeyboardInterrupt:
-        print("\n\n🛑 실시간 예측 중단됨")
+        print("\n\n🛑 Real-time data collection stopped")
         
-        # 예측 결과 저장
-        recent_predictions = predictor.get_recent_predictions(100)
-        if recent_predictions:
-            predictor.save_predictions()
-            
-            # 간단한 통계
-            total_predictions = len(recent_predictions)
-            gait_predictions = sum(1 for p in recent_predictions if p['predicted_class'] == 'gait')
-            gait_percentage = gait_predictions / total_predictions * 100
-            
-            print(f"\n📊 세션 통계:")
-            print(f"   총 예측 수: {total_predictions}")
-            print(f"   보행 예측: {gait_predictions} ({gait_percentage:.1f}%)")
-            print(f"   비보행 예측: {total_predictions - gait_predictions} ({100 - gait_percentage:.1f}%)")
+        # Save prediction results (only if predictor exists)
+        if predictor:
+            recent_predictions = predictor.get_recent_predictions(100)
+            if recent_predictions:
+                predictor.save_predictions()
+                
+                # Simple statistics
+                total_predictions = len(recent_predictions)
+                gait_predictions = sum(1 for p in recent_predictions if p['predicted_class'] == 'gait')
+                gait_percentage = gait_predictions / total_predictions * 100
+                
+                print(f"\n📊 Session Statistics:")
+                print(f"   Total predictions: {total_predictions}")
+                print(f"   Gait predictions: {gait_predictions} ({gait_percentage:.1f}%)")
+                print(f"   Non-gait predictions: {total_predictions - gait_predictions} ({100 - gait_percentage:.1f}%)")
     
     except Exception as e:
-        print(f"\n❌ 오류 발생: {e}")
+        print(f"\n❌ Error occurred: {e}")
         import traceback
         traceback.print_exc()
     
     finally:
-        # 정리
+        # Cleanup
         try:
             bus.close()
-            print("✅ I2C 버스 종료")
+            print("✅ I2C bus closed")
         except:
             pass
 
