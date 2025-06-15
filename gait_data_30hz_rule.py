@@ -497,7 +497,7 @@ def save_gait_data_to_supabase(gait_data):
                 i,  # frame: gait 시작을 0으로 하여 1씩 증가
                 f"{i * 0.033:.3f}",  # sync_timestamp: 0.033초씩 증가 (30Hz)
                 f"{data['accel_x']:.3f}",  # 가속도: 소수점 3자리 반올림
-                f"{data['accel_y']:.3f}",
+                f"{-data['accel_y']:.3f}",  # accel_y 부호 반전하여 저장
                 f"{data['accel_z']:.3f}",
                 f"{data['gyro_x']:.5f}",  # 각속도: 소수점 5자리 반올림
                 f"{data['gyro_y']:.5f}",
@@ -506,7 +506,12 @@ def save_gait_data_to_supabase(gait_data):
             ])
         
         # Upload to Supabase (기존 버킷명 사용)
-        filename = f"gait_{int(time.time())}.csv"
+        # Generate KST-based filename (YYYYMMDD_HHMMSS)
+        from datetime import datetime, timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+        current_kst = datetime.now(kst)
+        timestamp_str = current_kst.strftime("%Y%m%d_%H%M%S")
+        filename = f"gait_{timestamp_str}.csv"
         csv_content = csv_data.getvalue()
         
         # Debug: Check content length to prevent file name too long error
@@ -524,7 +529,7 @@ def save_gait_data_to_supabase(gait_data):
             print("⚠️ Failed to save gait data to Supabase - trying local backup")
             # Fallback: Save locally
             try:
-                local_filename = f"backup_gait_{int(time.time())}.csv"
+                local_filename = f"backup_gait_{timestamp_str}.csv"
                 with open(local_filename, 'w', encoding='utf-8') as f:
                     f.write(csv_content)
                 print(f"✅ Gait data saved locally: {local_filename}")
@@ -546,12 +551,17 @@ def save_gait_data_to_supabase(gait_data):
             for i, data in enumerate(gait_data):
                 csv_writer.writerow([
                     i, f"{i * 0.033:.3f}",
-                    f"{data['accel_x']:.3f}", f"{data['accel_y']:.3f}", f"{data['accel_z']:.3f}",
+                    f"{data['accel_x']:.3f}", f"{-data['accel_y']:.3f}", f"{data['accel_z']:.3f}",  # accel_y 부호 반전
                     f"{data['gyro_x']:.5f}", f"{data['gyro_y']:.5f}", f"{data['gyro_z']:.5f}",
                     data['unix_timestamp']
                 ])
             
-            local_filename = f"backup_gait_{int(time.time())}.csv"
+            # Generate KST-based filename for backup
+            from datetime import datetime, timezone, timedelta
+            kst = timezone(timedelta(hours=9))
+            current_kst = datetime.now(kst)
+            timestamp_str = current_kst.strftime("%Y%m%d_%H%M%S")
+            local_filename = f"backup_gait_{timestamp_str}.csv"
             with open(local_filename, 'w', encoding='utf-8') as f:
                 f.write(csv_data.getvalue())
             print(f"✅ Gait data saved locally as backup: {local_filename}")
