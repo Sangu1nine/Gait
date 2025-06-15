@@ -225,6 +225,11 @@ class RealTimeGaitDetector:
             # Copy window data
             window_data = list(self.data_buffer)
             
+            # Get current sensor values (latest sample)
+            current_sample = window_data[-1]
+            accel_x, accel_y, accel_z = current_sample[0], current_sample[1], current_sample[2]
+            gyro_x, gyro_y, gyro_z = current_sample[3], current_sample[4], current_sample[5]
+            
             # Preprocessing
             X_preprocessed = self.preprocess_data(window_data)
             
@@ -238,17 +243,21 @@ class RealTimeGaitDetector:
             prediction_label = self.label_encoder.inverse_transform(y_pred.flatten())[0]
             confidence = y_prob[0][0]
             
-            # Display results
+            # Display results with sensor values
             timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             status_icon = "🚶" if prediction_label == "gait" else "🧍"
             
             print(f"[{timestamp}] {status_icon} Prediction: {prediction_label} "
                   f"(confidence: {confidence:.3f}, threshold: {self.optimal_threshold:.3f})")
+            print(f"    📊 Accel: X={accel_x:+7.3f} Y={accel_y:+7.3f} Z={accel_z:+7.3f} m/s²")
+            print(f"    🔄 Gyro:  X={gyro_x:+7.3f} Y={gyro_y:+7.3f} Z={gyro_z:+7.3f} °/s")
+            print(f"    🎯 Raw probability: {y_prob[0][0]:.6f}")
+            print()  # Add blank line for readability
             
         except Exception as e:
             print(f"❌ Prediction error: {e}")
     
-    def start_detection(self):
+    def start_detection(self, show_sensor_details=True):
         """Start real-time gait detection"""
         if self.is_collecting:
             print("⚠️ Detection is already running.")
@@ -256,6 +265,8 @@ class RealTimeGaitDetector:
         
         print("🎯 Starting real-time gait detection...")
         print("📋 Legend: 🚶 = Walking, 🧍 = Standing")
+        if show_sensor_details:
+            print("📊 Sensor data will be displayed with each prediction")
         print("⏹️ Press Ctrl+C to stop.")
         
         self.is_collecting = True
