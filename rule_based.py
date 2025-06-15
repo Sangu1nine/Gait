@@ -77,13 +77,13 @@ class GaitDetector:
         self.lpf_gravity = sg.butter(4, 0.25/(self.FS/2), output='sos')    # 중력 분리
         self.lpf_dynamic = sg.butter(4, 6.0/(self.FS/2), output='sos')     # 동적 가속도 노이즈 제거
         
-        # 통합 상태별 임계값 (중간 수준으로 조정)
+        # 통합 상태별 임계값 (gait 감지 엄격하게 조정)
         self.thresholds = {
-            'gait_start': 0.79,      # non-gait → gait: 79% (0.83과 0.75의 중간)
-            'gait_maintain': 0.525,  # gait 유지: 52.5% (0.55와 0.50의 중간)
-            'gait_end': 0.275,       # gait → non-gait: 27.5% (0.25와 0.30의 중간)
-            'confidence_gait': 0.375, # gait 상태 신뢰도 (0.4와 0.35의 중간)
-            'confidence_non_gait': 0.65  # non-gait 상태 신뢰도 (0.7과 0.6의 중간)
+            'gait_start': 0.85,      # non-gait → gait: 85% (더 엄격하게)
+            'gait_maintain': 0.60,   # gait 유지: 60% (더 높게)
+            'gait_end': 0.25,        # gait → non-gait: 25% (유지)
+            'confidence_gait': 0.45, # gait 상태 신뢰도 (더 높게)
+            'confidence_non_gait': 0.65  # non-gait 상태 신뢰도 (유지)
         }
         
         # 히스테리시스 설정
