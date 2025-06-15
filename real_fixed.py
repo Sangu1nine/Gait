@@ -242,7 +242,7 @@ def read_sensor_data():
     """IMU 센서에서 6축 데이터 읽기"""
     # 가속도 데이터
     accel_x = accel_ms2(read_data(register_accel_xout_h))
-    accel_y = accel_ms2(read_data(register_accel_yout_h))
+    accel_y = -accel_ms2(read_data(register_accel_yout_h))
     accel_z = accel_ms2(read_data(register_accel_zout_h))
     
     # 자이로스코프 데이터
