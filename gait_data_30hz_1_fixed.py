@@ -49,7 +49,7 @@ GAIT_WINDOW_SIZE = 60  # Window size for gait detection model
 FALL_WINDOW_SIZE = 150  # Window size for fall detection model
 SENSOR_HZ = 100  # 센서 데이터 수집 주파수 (100Hz)
 GAIT_TARGET_HZ = 30   # 보행 감지용 다운샘플링 주파수 (30Hz)
-GAIT_THRESHOLD = 0.6  # Gait detection threshold
+GAIT_THRESHOLD = 0.35  # Gait detection threshold
 FALL_THRESHOLD = 0.5  # Fall detection threshold
 
 # State transition parameters
@@ -57,8 +57,8 @@ GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
 # Detection timing parameters
-FALL_DETECTION_INTERVAL = 0.2  # 낙상 감지 주기 (0.2초 = 20Hz)
-GAIT_DETECTION_INTERVAL = 0.033  # 보행 감지 주기 (0.033초 ≈ 30Hz)
+FALL_DETECTION_INTERVAL = 0.1  # 낙상 감지 주기 (0.1초 = 10frame)
+GAIT_DETECTION_INTERVAL = 0.033  # 보행 감지 주기 (0.1초 ≈ 3frame)
 
 # Global Supabase client variable
 supabase = None
