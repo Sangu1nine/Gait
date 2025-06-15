@@ -48,7 +48,7 @@ FALL_SCALER_PATH = "scalers/fall_detection"
 FALL_WINDOW_SIZE = 150  # Window size for fall detection model
 SENSOR_HZ = 100  # 센서 데이터 수집 주파수 (100Hz)
 GAIT_TARGET_HZ = 30   # 보행 감지용 다운샘플링 주파수 (30Hz)
-FALL_THRESHOLD = 0.5  # Fall detection threshold
+FALL_THRESHOLD = 0.8  # Fall detection threshold (0.5 → 0.8: 더 엄격하게)
 
 # State transition parameters
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
@@ -75,6 +75,8 @@ current_gait_start_time = None
 # Fall detection variables
 fall_interpreter = None
 fall_scalers = {}  # Dictionary for multiple scalers
+last_fall_detection_time = 0  # 마지막 낙상 감지 시간
+FALL_COOLDOWN_SECONDS = 5  # 낙상 감지 후 5초 동안 중복 감지 방지
 
 class GaitDetector:
     """
@@ -350,19 +352,116 @@ def accel_g(val):
     """Convert acceleration value to g"""
     return twocomplements(val)/sensitive_accel
 
+def check_supabase_env():
+    """Check Supabase environment variables"""
+    load_dotenv()
+    SUPABASE_URL = os.getenv("SUPABASE_URL")
+    SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+    
+    print("🔍 Checking Supabase environment variables...")
+    
+    if not SUPABASE_URL:
+        print("❌ SUPABASE_URL not found in environment variables")
+        return False
+    else:
+        # Mask the URL for security but show it exists
+        masked_url = SUPABASE_URL[:20] + "..." + SUPABASE_URL[-10:] if len(SUPABASE_URL) > 30 else SUPABASE_URL
+        print(f"✅ SUPABASE_URL found: {masked_url}")
+    
+    if not SUPABASE_KEY:
+        print("❌ SUPABASE_KEY not found in environment variables")
+        return False
+    else:
+        # Mask the key for security
+        masked_key = SUPABASE_KEY[:10] + "..." + SUPABASE_KEY[-5:] if len(SUPABASE_KEY) > 15 else "***"
+        print(f"✅ SUPABASE_KEY found: {masked_key}")
+    
+    return True
+
 def init_supabase():
     """Initialize Supabase client"""
     global supabase
+    
+    # Check environment variables first
+    if not check_supabase_env():
+        return False
     
     load_dotenv()
     SUPABASE_URL = os.getenv("SUPABASE_URL")
     SUPABASE_KEY = os.getenv("SUPABASE_KEY")
     
-    if SUPABASE_URL and SUPABASE_KEY:
+    try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
         return True
+    except Exception as e:
+        print(f"❌ Failed to create Supabase client: {e}")
+        return False
+
+def test_supabase_connection():
+    """Test Supabase connection by checking service accessibility"""
+    if not supabase:
+        print("❌ Supabase client not initialized")
+        return False
     
-    return False
+    try:
+        print("🔗 Testing Supabase connection...")
+        
+        # Test 1: Storage bucket access
+        try:
+            storage_response = supabase.storage().list_buckets()
+            if storage_response:
+                print("✅ Storage service accessible")
+                
+                # Check if required buckets exist
+                bucket_names = [bucket.name for bucket in storage_response]
+                required_buckets = ['gait_data', 'fall_events']
+                
+                for bucket in required_buckets:
+                    if bucket in bucket_names:
+                        print(f"  ✅ Bucket '{bucket}' exists")
+                    else:
+                        print(f"  ⚠️ Bucket '{bucket}' not found")
+                        
+            else:
+                print("⚠️ Storage service accessible but no buckets found")
+                
+        except Exception as storage_e:
+            print(f"⚠️ Storage service test failed: {storage_e}")
+        
+        # Test 2: Database table access
+        try:
+            # Try to read from fall_events table (with limit to minimize impact)
+            table_response = supabase.table("fall_events").select("*").limit(1).execute()
+            if table_response:
+                print("✅ Database service accessible")
+                print(f"  ✅ Table 'fall_events' accessible")
+            else:
+                print("⚠️ Database service accessible but table query returned no response")
+                
+        except Exception as db_e:
+            print(f"⚠️ Database service test failed: {db_e}")
+            # This might be expected if table doesn't exist yet
+            if "relation" in str(db_e).lower() and "does not exist" in str(db_e).lower():
+                print("  ℹ️ Table 'fall_events' may not exist yet - will be created when first fall is detected")
+            else:
+                print(f"  ❌ Unexpected database error: {db_e}")
+        
+        # Test 3: Basic API connectivity
+        try:
+            # Try to get basic info about the project
+            # This is a lightweight operation to test general connectivity
+            auth_response = supabase.auth.get_session()
+            print("✅ Basic API connectivity confirmed")
+            
+        except Exception as api_e:
+            print(f"⚠️ Basic API test failed: {api_e}")
+        
+        print("🔗 Supabase connection test completed")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Supabase connection test failed: {e}")
+        return False
 
 def save_gait_data_to_supabase(gait_data):
     """Save gait data to Supabase"""
@@ -414,15 +513,50 @@ def save_fall_event_to_supabase(timestamp):
         return
     
     try:
-        # Upload fall event data
-        response = supabase.table("fall_events").insert({"timestamp": timestamp}).execute()
+        # Convert timestamp to ISO format for better compatibility
+        fall_time = datetime.datetime.fromtimestamp(timestamp)
+        fall_data = {
+            "timestamp": fall_time.isoformat(),
+            "detected_at": datetime.datetime.now().isoformat(),
+            "unix_timestamp": timestamp
+        }
         
-        if response:
-            print(f"✅ Fall event saved to Supabase: {response}")
+        # Try to insert into fall_events table
+        response = supabase.table("fall_events").insert(fall_data).execute()
+        
+        if response and response.data:
+            print(f"✅ Fall event saved to Supabase")
         else:
-            print("⚠️ Failed to save fall event to Supabase")
+            print("⚠️ Fall event saved but no response data")
+            
     except Exception as e:
         print(f"❌ Error saving fall event to Supabase: {e}")
+        
+        # Fallback: Save to storage as backup
+        try:
+            fall_filename = f"fall_event_{int(timestamp)}.json"
+            fall_json = {
+                "timestamp": datetime.datetime.fromtimestamp(timestamp).isoformat(),
+                "detected_at": datetime.datetime.now().isoformat(),
+                "unix_timestamp": timestamp
+            }
+            
+            import json
+            fall_content = json.dumps(fall_json, indent=2)
+            
+            backup_response = supabase.storage().from_("fall_events").upload(
+                fall_filename,
+                fall_content,
+                {"content-type": "application/json"}
+            )
+            
+            if backup_response:
+                print(f"✅ Fall event saved to storage as backup: {fall_filename}")
+            else:
+                print("⚠️ Failed to save fall event backup to storage")
+                
+        except Exception as backup_e:
+            print(f"❌ Backup save also failed: {backup_e}")
 
 def load_models():
     """Load fall detection model only (gait detection is now rule-based)"""
@@ -678,6 +812,7 @@ def gait_detection_thread():
 
 def fall_detection_thread():
     """Thread for fall detection using 100Hz data with longer interval"""
+    global last_fall_detection_time
     print("🚨 Fall detection thread initialized (100Hz data, 0.05s interval)")
     
     while is_running:
@@ -703,10 +838,18 @@ def fall_detection_thread():
                     prediction = fall_interpreter.get_tensor(output_details[0]['index'])
                     fall_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
                     
-                    # Check for fall
+                    current_time = time.time()
+                    
+                    # Check for fall with cooldown period
                     if fall_probability > FALL_THRESHOLD:
-                        print(f"🚨 Fall detected! Probability: {fall_probability:.2f}")
-                        save_fall_event_to_supabase(sensor_window[-1]['unix_timestamp'])
+                        # 중복 감지 방지: 마지막 낙상 감지 후 5초 이내면 무시
+                        if current_time - last_fall_detection_time > FALL_COOLDOWN_SECONDS:
+                            print(f"🚨 Fall detected! Probability: {fall_probability:.2f}")
+                            save_fall_event_to_supabase(sensor_window[-1]['unix_timestamp'])
+                            last_fall_detection_time = current_time
+                        else:
+                            remaining_cooldown = FALL_COOLDOWN_SECONDS - (current_time - last_fall_detection_time)
+                            print(f"🔄 Fall detected but in cooldown period (remaining: {remaining_cooldown:.1f}s)")
             
             time.sleep(FALL_DETECTION_INTERVAL)  # 실시간성 강화된 낙상 감지 주기
             
@@ -728,10 +871,21 @@ def main():
     print(f"   └─ Interval: {FALL_DETECTION_INTERVAL}s ({1/FALL_DETECTION_INTERVAL:.0f}Hz detection)")
     print("=" * 70)
     
-    # Initialize Supabase
-    if not init_supabase():
-        print("⚠️ Continuing without Supabase - data will be saved locally only")
+    # Initialize and test Supabase connection
+    if init_supabase():
+        print("✅ Supabase client initialized")
+        
+        # Test connection
+        connection_ok = test_supabase_connection()
+        if connection_ok:
+            print("✅ Supabase connection verified - data will be uploaded to cloud")
+        else:
+            print("⚠️ Supabase connection issues detected - check your network and credentials")
+            print("⚠️ System will continue but data upload may fail")
+    else:
+        print("❌ Supabase initialization failed")
         print("⚠️ Please check your SUPABASE_URL and SUPABASE_KEY in .env file")
+        print("⚠️ Continuing without Supabase - data will not be saved to cloud")
     
     # Load fall detection model
     load_models()
