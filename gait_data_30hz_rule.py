@@ -54,8 +54,8 @@ FALL_THRESHOLD = 0.5  # Fall detection threshold
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
 # Detection timing parameters - 목적별 최적화
-FALL_DETECTION_INTERVAL = 0.05  # 낙상 감지 주기 (0.05초 = 20Hz) - 실시간성 강화
-GAIT_DETECTION_INTERVAL = 0.033   # 보행 감지 주기 (0.033초 = 30Hz) - 실시간성 중시
+FALL_DETECTION_INTERVAL = 0.05  # 낙상 감지 주기 (0.05초 = 100Hz 기준 5frame) - 실시간성 강화
+GAIT_DETECTION_INTERVAL = 0.033   # 보행 감지 주기 (0.033초 = 30Hz 기준 1frame) - 실시간성 중시
 
 # Global Supabase client variable
 supabase = None
@@ -92,21 +92,21 @@ class GaitDetector:
         self.analysis_window = int(2 * self.FS)     # 60프레임 (2초) - 기본 분석
         self.decision_window = int(3 * self.FS)     # 90프레임 (3초) - 의사결정
         
-        # 알고리즘 파라미터 (덜 예민하게 조정)
-        self.global_thr = 0.07  # g (0.05 → 0.07: 더 큰 움직임 요구)
+        # 알고리즘 파라미터 (균형잡힌 조정)
+        self.global_thr = 0.06  # g (0.07 → 0.06: 중간 수준으로 조정)
         self.peak_thr = 0.40    # g
         
         # 통합 필터 시스템
         self.lpf_gravity = sg.butter(4, 0.25/(self.FS/2), output='sos')    # 중력 분리
         self.lpf_dynamic = sg.butter(4, 6.0/(self.FS/2), output='sos')     # 동적 가속도 노이즈 제거
         
-        # 통합 상태별 임계값 (덜 예민하게 조정)
+        # 통합 상태별 임계값 (최종 균형 조정)
         self.thresholds = {
-            'gait_start': 0.83,      # non-gait → gait: 83% (50/60 프레임) - 더 엄격
-            'gait_maintain': 0.55,   # gait 유지: 55% - 약간 낮춤
+            'gait_start': 0.85,      # non-gait → gait: 85% - 더 엄격하게 (False Positive 감소)
+            'gait_maintain': 0.60,   # gait 유지: 60% - 더 엄격하게 (안정성 향상)
             'gait_end': 0.25,        # gait → non-gait: 25% (75% non-gait) - 유지
-            'confidence_gait': 0.4,  # gait 상태에서 낮은 신뢰도 허용
-            'confidence_non_gait': 0.7  # non-gait 상태에서 더 높은 신뢰도 요구 (0.6 → 0.7)
+            'confidence_gait': 0.45, # gait 상태에서 더 높은 신뢰도 요구 (0.4 → 0.45)
+            'confidence_non_gait': 0.65  # non-gait 상태에서 약간 완화 (0.7 → 0.65)
         }
         
         # 히스테리시스 설정
@@ -197,22 +197,22 @@ class GaitDetector:
         """적응적 보행 검증 (현재 상태 고려)"""
         confidence = 0.0
         
-        # 기본 활동 검사 (더 엄격한 기준)
+        # 기본 활동 검사 (완화된 기준)
         I_act = (vm > self.global_thr).astype(int)
         activity_ratio = I_act.mean()
         
-        if activity_ratio < 0.5:  # 활동이 부족하면 바로 non-gait (0.4 → 0.5)
+        if activity_ratio < 0.45:  # 활동이 부족하면 바로 non-gait (0.5 → 0.45: 완화)
             return 0.1
         
-        # 조건 1: 피크 강도 검사 (상태별 다른 기준)
+        # 조건 1: 피크 강도 검사 (상태별 완화된 기준)
         peak_ratio = (vm > self.peak_thr).mean()
         if self.current_state == "gait":
-            # gait 상태: 더 관대한 기준
-            if peak_ratio <= 0.05:  # 5%까지 허용
+            # gait 상태: 약간 완화된 기준
+            if peak_ratio <= 0.065:  # 6.5%까지 허용 (5% → 6.5%)
                 confidence += 0.4
         else:
-            # non-gait 상태: 엄격한 기준
-            if peak_ratio <= 0.025:  # 2.5%
+            # non-gait 상태: 완화된 기준
+            if peak_ratio <= 0.0325:  # 3.25% (2.5% → 3.25%)
                 confidence += 0.4
         
         # 조건 2: 주파수 분석
@@ -225,13 +225,13 @@ class GaitDetector:
                 peak_power = pxx[peak_idx]
                 total_power = pxx.sum()
                 
-                # 주파수 범위 (덜 예민하게 조정)
-                freq_range = (0.7, 3.2) if self.current_state == "gait" else (0.9, 2.8)
+                # 주파수 범위 (확대된 범위)
+                freq_range = (0.65, 3.35) if self.current_state == "gait" else (0.85, 2.9)
                 if freq_range[0] <= f_peak <= freq_range[1]:
                     confidence += 0.3
                 
-                # 피크 파워 비율 (더 엄격하게 조정)
-                power_threshold = 0.15 if self.current_state == "gait" else 0.18
+                # 피크 파워 비율 (완화된 기준)
+                power_threshold = 0.135 if self.current_state == "gait" else 0.165  # 13.5% / 16.5%
                 if peak_power >= power_threshold * total_power:
                     confidence += 0.3
                     
@@ -374,9 +374,24 @@ def save_gait_data_to_supabase(gait_data):
         # Convert data to CSV format
         csv_data = io.StringIO()
         csv_writer = csv.writer(csv_data)
-        csv_writer.writerow(gait_data[0].keys())
-        for data in gait_data:
-            csv_writer.writerow(data.values())
+        
+        # Write header (frame starts from 0, no gait_frame field)
+        csv_writer.writerow(['frame', 'sync_timestamp', 'accel_x', 'accel_y', 'accel_z', 
+                            'gyro_x', 'gyro_y', 'gyro_z', 'unix_timestamp'])
+        
+        # Write data with proper formatting
+        for i, data in enumerate(gait_data):
+            csv_writer.writerow([
+                i,  # frame: gait 시작을 0으로 하여 1씩 증가
+                                 f"{i * 0.033:.3f}",  # sync_timestamp: 0.033초씩 증가 (30Hz)
+                f"{data['accel_x']:.3f}",  # 가속도: 소수점 3자리 반올림
+                f"{data['accel_y']:.3f}",
+                f"{data['accel_z']:.3f}",
+                f"{data['gyro_x']:.5f}",  # 각속도: 소수점 5자리 반올림
+                f"{data['gyro_y']:.5f}",
+                f"{data['gyro_z']:.5f}",
+                data['unix_timestamp']  # 절대 시간은 그대로 유지
+            ])
         
         # Upload to Supabase
         response = supabase.storage().from_("gait_data").upload(
