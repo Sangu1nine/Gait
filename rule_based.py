@@ -54,33 +54,68 @@ class MPU6050:
         return value
 
 class GaitDetector:
-    """실시간 보행 감지 시스템"""
+    """
+    실시간 보행 감지 시스템 (통합 설계)
+    - Enhanced Butterworth filtering
+    - Majority voting with adaptive thresholds  
+    - Hysteresis-based state management
+    - State-specific decision criteria
+    """
     
     def __init__(self, sampling_rate=30):
         self.FS = sampling_rate
-        self.WIN = int(2 * self.FS)  # 2초 윈도우 (60프레임)
+        
+        # 통합 윈도우 설정
+        self.analysis_window = int(2 * self.FS)     # 60프레임 (2초) - 기본 분석
+        self.decision_window = int(3 * self.FS)     # 90프레임 (3초) - 의사결정
         
         # 알고리즘 파라미터
         self.global_thr = 0.05  # g
         self.peak_thr = 0.40    # g
-        self.min_len_s = 2.0    # 초
         
-        # 신호처리 필터
-        self.lpf = sg.butter(4, 0.25/(self.FS/2), output='sos')
+        # 통합 필터 시스템
+        self.lpf_gravity = sg.butter(4, 0.25/(self.FS/2), output='sos')    # 중력 분리
+        self.lpf_dynamic = sg.butter(4, 6.0/(self.FS/2), output='sos')     # 동적 가속도 노이즈 제거
         
-        # 데이터 버퍼
-        self.buf_acc = collections.deque(maxlen=self.WIN)
+        # 통합 상태별 임계값
+        self.thresholds = {
+            'gait_start': 0.75,      # non-gait → gait: 75% (45/60 프레임)
+            'gait_maintain': 0.60,   # gait 유지: 60% 
+            'gait_end': 0.25,        # gait → non-gait: 25% (75% non-gait)
+            'confidence_gait': 0.4,  # gait 상태에서 낮은 신뢰도 허용
+            'confidence_non_gait': 0.6  # non-gait 상태에서 높은 신뢰도 요구
+        }
+        
+        # 히스테리시스 설정
+        self.hysteresis_frames = {
+            'start': 60,    # 2초 - 보행 시작
+            'end': 90       # 3초 - 보행 종료  
+        }
+        
+        # 데이터 버퍼 (최대 윈도우 크기로 설정)
+        self.buf_acc = collections.deque(maxlen=self.decision_window)
         
         # 상태 관리
-        self.current_state = "non-gait"  # 초기 상태
-        self.frame_labels = collections.deque(maxlen=self.WIN)  # 각 프레임 라벨
-        self.state_counter = 0  # 현재 상태 지속 프레임 수
+        self.current_state = "non-gait"
+        self.frame_labels = collections.deque(maxlen=self.decision_window)
+        self.frame_confidences = collections.deque(maxlen=self.decision_window)
         
-        print(f"Gait detection system initialized (Sampling: {self.FS}Hz, Window: {self.WIN} frames)")
+        # 디버깅 정보
+        self.debug_info = {
+            'gait_ratio': 0.0,
+            'decision_basis': '',
+            'frames_analyzed': 0
+        }
+        
+        print(f"Enhanced Gait Detector initialized:")
+        print(f"- Sampling: {self.FS}Hz")
+        print(f"- Analysis window: {self.analysis_window} frames ({self.analysis_window/self.FS:.1f}s)")
+        print(f"- Decision window: {self.decision_window} frames ({self.decision_window/self.FS:.1f}s)")
+        print(f"- Hysteresis: start={self.hysteresis_frames['start']/self.FS:.1f}s, end={self.hysteresis_frames['end']/self.FS:.1f}s")
     
     def process_frame(self, accel_data: np.ndarray) -> Tuple[str, str, float]:
         """
-        새로운 프레임 처리
+        통합된 프레임 처리
         
         Args:
             accel_data: [ax, ay, az] 가속도 데이터 (g 단위)
@@ -91,113 +126,182 @@ class GaitDetector:
         # 버퍼에 데이터 추가
         self.buf_acc.append(accel_data.copy())
         
-        # 윈도우가 채워지지 않은 경우
-        if len(self.buf_acc) < self.WIN:
+        # 최소 분석 윈도우가 채워지지 않은 경우
+        if len(self.buf_acc) < self.analysis_window:
             self.frame_labels.append("unknown")
+            self.frame_confidences.append(0.0)
             return self.current_state, "unknown", 0.0
         
-        # 윈도우 분석
-        frame_label, confidence = self._analyze_window()
+        # 통합 윈도우 분석
+        frame_label, confidence = self._enhanced_analyze_window()
         
-        # 중앙 프레임 라벨링 (1초 지연)
-        center_idx = self.WIN // 2
-        if len(self.frame_labels) >= center_idx:
-            # 현재 분석 결과를 중앙 프레임에 할당
-            self.frame_labels.append(frame_label)
-        else:
-            self.frame_labels.append("unknown")
+        # 프레임 라벨 및 신뢰도 저장
+        self.frame_labels.append(frame_label)
+        self.frame_confidences.append(confidence)
         
-        # 상태 변화 로직
-        self._update_state()
+        # 통합 상태 업데이트
+        self._integrated_state_update()
         
         return self.current_state, frame_label, confidence
     
-    def _analyze_window(self) -> Tuple[str, float]:
-        """윈도우 분석하여 프레임 라벨 결정"""
-        acc = np.vstack(self.buf_acc)
+    def _enhanced_analyze_window(self) -> Tuple[str, float]:
+        """향상된 윈도우 분석 (다중 필터 적용)"""
+        acc = np.vstack(list(self.buf_acc)[-self.analysis_window:])
         
-        # ① 중력 분리 (4차 Butterworth LPF 0.25Hz)
-        g_est = sg.sosfiltfilt(self.lpf, acc, axis=0)
+        # ① 이중 필터링
+        # 중력 분리
+        g_est = sg.sosfiltfilt(self.lpf_gravity, acc, axis=0)
         dyn = acc - g_est
         
-        # ② 크기 신호 생성
-        vm = np.linalg.norm(dyn, axis=1)
+        # 동적 가속도 노이즈 제거
+        dyn_filtered = sg.sosfiltfilt(self.lpf_dynamic, dyn, axis=0)
         
-        # ③ 전역 저강도 필터
-        I_act = (vm > self.global_thr).astype(int)
+        # ② 크기 신호 생성 (필터링된 신호 사용)
+        vm = np.linalg.norm(dyn_filtered, axis=1)
         
-        # ④ 활동 스무딩 (Gaussian 1s 커널)
-        gaussian_kernel = sg.windows.gaussian(self.FS, std=self.FS//2)
-        gaussian_kernel = gaussian_kernel / gaussian_kernel.sum()
-        L_act = np.convolve(I_act, gaussian_kernel, mode='same')
+        # ③ 현재 상태 기반 적응적 분석
+        confidence = self._adaptive_gait_verification(vm)
         
-        # ⑤ Gap 병합 (간단화 버전)
-        # 연속 활동 검사
-        if L_act.mean() < 0.5:
-            return "non-gait", 0.1
+        # ④ 상태별 임계값 적용
+        current_threshold = self.thresholds['confidence_gait'] if self.current_state == "gait" else self.thresholds['confidence_non_gait']
         
-        # ⑥-⑦ 보행 검증
-        confidence = self._verify_gait(vm)
-        
-        if confidence > 0.5:
+        if confidence > current_threshold:
             return "gait", confidence
         else:
             return "non-gait", 1.0 - confidence
     
-    def _verify_gait(self, vm: np.ndarray) -> float:
-        """보행 검증 및 신뢰도 계산"""
+    def _adaptive_gait_verification(self, vm: np.ndarray) -> float:
+        """적응적 보행 검증 (현재 상태 고려)"""
         confidence = 0.0
         
-        # 조건 1: 0.4g 초과율 검사 (2.5% 이하여야 함)
-        peak_ratio = (vm > self.peak_thr).mean()
-        if peak_ratio <= 0.025:
-            confidence += 0.4
+        # 기본 활동 검사
+        I_act = (vm > self.global_thr).astype(int)
+        activity_ratio = I_act.mean()
         
-        # 조건 2: 주파수 검사
+        if activity_ratio < 0.4:  # 활동이 부족하면 바로 non-gait
+            return 0.1
+        
+        # 조건 1: 피크 강도 검사 (상태별 다른 기준)
+        peak_ratio = (vm > self.peak_thr).mean()
+        if self.current_state == "gait":
+            # gait 상태: 더 관대한 기준
+            if peak_ratio <= 0.05:  # 5%까지 허용
+                confidence += 0.4
+        else:
+            # non-gait 상태: 엄격한 기준
+            if peak_ratio <= 0.025:  # 2.5%
+                confidence += 0.4
+        
+        # 조건 2: 주파수 분석
         try:
-            f, pxx = sg.welch(vm, self.FS, nperseg=min(self.WIN, 60))
+            f, pxx = sg.welch(vm, self.FS, nperseg=min(len(vm), 60))
             
-            # 피크 주파수 찾기 (DC 제외)
-            peak_idx = np.argmax(pxx[1:]) + 1
-            f_peak = f[peak_idx]
-            peak_power = pxx[peak_idx]
-            total_power = pxx.sum()
-            
-            # 주파수 범위 검사 (0.8-3.0 Hz)
-            if 0.8 <= f_peak <= 3.0:
-                confidence += 0.3
-            
-            # 피크 파워 검사 (전체의 15% 이상)
-            if peak_power >= 0.15 * total_power:
-                confidence += 0.3
+            if len(pxx) > 1:
+                peak_idx = np.argmax(pxx[1:]) + 1
+                f_peak = f[peak_idx]
+                peak_power = pxx[peak_idx]
+                total_power = pxx.sum()
                 
+                # 주파수 범위 (상태별 조정)
+                freq_range = (0.6, 3.5) if self.current_state == "gait" else (0.8, 3.0)
+                if freq_range[0] <= f_peak <= freq_range[1]:
+                    confidence += 0.3
+                
+                # 피크 파워 비율 (상태별 조정)
+                power_threshold = 0.12 if self.current_state == "gait" else 0.15
+                if peak_power >= power_threshold * total_power:
+                    confidence += 0.3
+                    
         except:
-            # FFT 실패 시 신뢰도 감소
-            confidence *= 0.5
+            confidence *= 0.7
         
         return confidence
     
-    def _update_state(self):
-        """상태 변화 로직"""
-        if len(self.frame_labels) < 2:
+    def _integrated_state_update(self):
+        """통합된 상태 업데이트 (Majority Voting + Hysteresis)"""
+        # 분석 가능한 최소 프레임 수 확인
+        if len(self.frame_labels) < self.hysteresis_frames['start']:
             return
         
-        current_frame_label = self.frame_labels[-1]
+        # Majority Voting 기반 의사결정
+        decision = self._majority_voting_decision()
         
-        # 동일한 라벨이면 카운터 증가
-        if len(self.frame_labels) >= 2 and current_frame_label == self.frame_labels[-2]:
-            self.state_counter += 1
+        # 히스테리시스 적용하여 최종 상태 결정
+        new_state = self._apply_hysteresis(decision)
+        
+        # 상태 변화 시 로깅
+        if new_state != self.current_state:
+            gait_count = list(self.frame_labels)[-self.decision_window:].count("gait") if len(self.frame_labels) >= self.decision_window else list(self.frame_labels).count("gait")
+            total_count = min(len(self.frame_labels), self.decision_window)
+            ratio = gait_count / total_count if total_count > 0 else 0
+            
+            print(f"State changed: {self.current_state} → {new_state}")
+            print(f"  Decision basis: {self.debug_info['decision_basis']}")
+            print(f"  Gait ratio: {ratio:.2f} ({gait_count}/{total_count})")
+            print(f"  Frame: {len(self.frame_labels)}")
+            
+            self.current_state = new_state
+    
+    def _majority_voting_decision(self) -> str:
+        """적응적 Majority Voting"""
+        if len(self.frame_labels) < self.hysteresis_frames['start']:
+            return "insufficient_data"
+        
+        # 현재 상태에 따른 분석 윈도우 결정
+        if self.current_state == "non-gait":
+            # 보행 시작 감지: 60프레임 윈도우
+            window_size = self.hysteresis_frames['start']
+            threshold = self.thresholds['gait_start']
         else:
-            self.state_counter = 1
+            # 보행 유지/종료 감지: 90프레임 윈도우  
+            window_size = self.hysteresis_frames['end']
+            # 현재 평균 confidence 기반 dynamic threshold
+            recent_confidences = list(self.frame_confidences)[-window_size:]
+            avg_confidence = np.mean([c for c in recent_confidences if c > 0])
+            
+            if avg_confidence > 0.7:
+                threshold = self.thresholds['gait_maintain']  # 높은 신뢰도: 관대
+            else:
+                threshold = (self.thresholds['gait_maintain'] + self.thresholds['gait_start']) / 2  # 낮은 신뢰도: 중간
         
-        # 상태 전환 확인 (2초 = 60프레임)
-        if self.state_counter >= self.WIN:  # 2초 지속
-            if current_frame_label == "gait" and self.current_state == "non-gait":
-                self.current_state = "gait"
-                print(f"State changed: non-gait → gait (frame {len(self.frame_labels)})")
-            elif current_frame_label == "non-gait" and self.current_state == "gait":
-                self.current_state = "non-gait"
-                print(f"State changed: gait → non-gait (frame {len(self.frame_labels)})")
+        # 해당 윈도우에서 gait 비율 계산
+        recent_labels = list(self.frame_labels)[-window_size:]
+        gait_count = recent_labels.count("gait")
+        gait_ratio = gait_count / len(recent_labels)
+        
+        # 디버깅 정보 저장
+        self.debug_info = {
+            'gait_ratio': gait_ratio,
+            'decision_basis': f'window={window_size}, threshold={threshold:.2f}, confidence_avg={avg_confidence:.2f}' if self.current_state == "gait" else f'window={window_size}, threshold={threshold:.2f}',
+            'frames_analyzed': len(recent_labels)
+        }
+        
+        # 의사결정
+        if gait_ratio >= threshold:
+            return "gait"
+        elif gait_ratio <= (1.0 - threshold):  # 반대 비율로 non-gait 결정
+            return "non-gait"
+        else:
+            return "uncertain"
+    
+    def _apply_hysteresis(self, decision: str) -> str:
+        """히스테리시스 적용"""
+        if decision == "insufficient_data" or decision == "uncertain":
+            return self.current_state
+        
+        # 상태별 전환 조건
+        if self.current_state == "non-gait" and decision == "gait":
+            # 보행 시작: 빠른 반응 (2초)
+            return "gait"
+        elif self.current_state == "gait" and decision == "non-gait":
+            # 보행 종료: 신중한 반응 (3초 + 엄격한 기준)
+            if len(self.frame_labels) >= self.hysteresis_frames['end']:
+                recent_labels = list(self.frame_labels)[-self.hysteresis_frames['end']:]
+                non_gait_ratio = recent_labels.count("non-gait") / len(recent_labels)
+                if non_gait_ratio >= self.thresholds['gait_end']:
+                    return "non-gait"
+        
+        return self.current_state
 
 def main():
     """메인 실행 함수"""
@@ -224,9 +328,15 @@ def main():
             # 결과 출력 (매 프레임마다)
             elapsed = time.time() - start_time
             frame_time = frame_count * 0.033  # 30Hz = 0.033초/프레임
+            
+            # 추가 디버깅 정보
+            gait_ratio = detector.debug_info.get('gait_ratio', 0.0)
+            decision_basis = detector.debug_info.get('decision_basis', 'N/A')
+            
             print(f"[{state:8s}] {label:8s} ({confidence:.2f}) | "
                   f"a=({accel[0]:+.3f}, {accel[1]:+.3f}, {accel[2]:+.3f}) | "
-                  f"f={frame_count:4d} t={frame_time:.2f}s | cnt={detector.state_counter}/60")
+                  f"f={frame_count:4d} t={frame_time:.2f}s | "
+                  f"ratio={gait_ratio:.2f} | {decision_basis}")
             
             frame_count += 1
             
