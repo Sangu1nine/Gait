@@ -56,9 +56,11 @@ FALL_THRESHOLD = 0.5  # Fall detection threshold
 GAIT_TRANSITION_FRAMES = 60  # 2 seconds at 30Hz
 MIN_GAIT_DURATION_FRAMES = 300  # 10 seconds at 30Hz
 
-# Detection timing parameters
-FALL_DETECTION_INTERVAL = 0.1  # 낙상 감지 주기 (0.1초 = 10frame)
-GAIT_DETECTION_INTERVAL = 0.033  # 보행 감지 주기 (0.1초 ≈ 3frame)
+# Detection timing parameters - 목적별 최적화
+FALL_DETECTION_INTERVAL = 0.05  # 낙상 감지 주기 (0.05초 = 20Hz) - 실시간성 강화
+GAIT_DETECTION_INTERVAL = 0.1   # 보행 감지 주기 (0.1초 = 10Hz) - 정확도 우선, 배치 처리
+GAIT_STRIDE = 1  # 보행 감지 stride (1 = 모든 프레임 처리)
+GAIT_BATCH_SIZE = 5  # 보행 감지시 한번에 처리할 윈도우 수 (정확도 향상)
 
 # Global Supabase client variable
 supabase = None
@@ -429,75 +431,154 @@ def preprocess_for_fall(sensor_window):
         return None
 
 def gait_detection_thread():
-    """Thread for gait detection using 30Hz downsampled data"""
+    """Thread for gait detection using 30Hz downsampled data with batch processing for accuracy"""
     global gait_state, gait_consecutive_count, non_gait_consecutive_count
     global current_gait_data, current_gait_start_time, last_prediction_frame
     
-    print("🚶 Gait detection thread initialized (30Hz downsampled)")
+    print("🚶 Gait detection thread initialized (30Hz downsampled, batch processing for accuracy)")
     
     while is_running:
         try:
             # Get available downsampled sensor data (30Hz)
             with sensor_data_lock:
-                if len(gait_downsampled_buffer) < GAIT_WINDOW_SIZE:
+                if len(gait_downsampled_buffer) < GAIT_WINDOW_SIZE + GAIT_BATCH_SIZE:
                     time.sleep(0.01)
                     continue
                 
-                # Get the latest 30Hz window
-                sensor_window = list(gait_downsampled_buffer)[-GAIT_WINDOW_SIZE:]
+                # 배치 처리를 위해 여러 윈도우 준비
+                buffer_list = list(gait_downsampled_buffer)
+                available_frames = len(buffer_list)
             
-            # Get current gait frame number
-            current_gait_frame = sensor_window[-1]['gait_frame']
+            # 배치 처리: stride=1로 여러 윈도우 생성
+            windows_to_process = []
+            frame_numbers = []
             
-            # Skip if already processed this gait frame
-            if current_gait_frame <= last_prediction_frame:
-                time.sleep(0.01)
-                continue
+            # 마지막 처리된 프레임 이후부터 처리
+            start_idx = max(0, available_frames - GAIT_WINDOW_SIZE - GAIT_BATCH_SIZE + 1)
             
-            # Preprocess and predict
-            if gait_interpreter and gait_scaler:
-                preprocessed = preprocess_for_gait(sensor_window)
-                if preprocessed is not None:
-                    # Run inference
-                    input_details = gait_interpreter.get_input_details()
-                    output_details = gait_interpreter.get_output_details()
+            for i in range(GAIT_BATCH_SIZE):
+                window_start = start_idx + i * GAIT_STRIDE
+                window_end = window_start + GAIT_WINDOW_SIZE
+                
+                if window_end <= available_frames:
+                    window = buffer_list[window_start:window_end]
+                    current_frame = window[-1]['gait_frame']
                     
-                    gait_interpreter.set_tensor(input_details[0]['index'], preprocessed)
-                    gait_interpreter.invoke()
-                    
-                    prediction = gait_interpreter.get_tensor(output_details[0]['index'])
-                    gait_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
+                    # 이미 처리된 프레임은 건너뛰기
+                    if current_frame > last_prediction_frame:
+                        windows_to_process.append(window)
+                        frame_numbers.append(current_frame)
+            
+            # 배치로 예측 수행
+            if windows_to_process and gait_interpreter and gait_scaler:
+                batch_predictions = []
+                
+                for window in windows_to_process:
+                    preprocessed = preprocess_for_gait(window)
+                    if preprocessed is not None:
+                        # Run inference
+                        input_details = gait_interpreter.get_input_details()
+                        output_details = gait_interpreter.get_output_details()
+                        
+                        gait_interpreter.set_tensor(input_details[0]['index'], preprocessed)
+                        gait_interpreter.invoke()
+                        
+                        prediction = gait_interpreter.get_tensor(output_details[0]['index'])
+                        gait_probability = prediction[0][0] if len(prediction[0]) == 1 else prediction[0][1]
+                        batch_predictions.append((gait_probability, window[-1]))
+                
+                # 배치 결과를 평균내어 더 안정적인 예측 (정확도 향상)
+                if batch_predictions:
+                    avg_probability = np.mean([pred[0] for pred in batch_predictions])
+                    latest_sensor_data = batch_predictions[-1][1]  # 가장 최신 데이터 사용
                     
                     # Label decoding for better debugging
                     if gait_label_encoder:
-                        # Convert probability to binary prediction
-                        binary_pred = 1 if gait_probability > GAIT_THRESHOLD else 0
+                        binary_pred = 1 if avg_probability > GAIT_THRESHOLD else 0
                         try:
                             predicted_label = gait_label_encoder.inverse_transform([binary_pred])[0]
                             # Debug information with label
-                            if current_gait_frame % 30 == 0:  # Print every 1 second at 30Hz
-                                print(f"🔍 Frame {current_gait_frame}: Prob={gait_probability:.3f}, Pred={predicted_label}")
+                            current_frame = latest_sensor_data['gait_frame']
+                            if current_frame % 30 == 0:  # Print every 1 second at 30Hz
+                                print(f"🔍 Frame {current_frame}: Batch Avg Prob={avg_probability:.3f}, Pred={predicted_label} (batch size: {len(batch_predictions)})")
                         except Exception as e:
                             print(f"⚠️ Label decoding failed: {e}")
                     
-                    # Update consecutive counts
-                    if gait_probability > GAIT_THRESHOLD:
-                        gait_consecutive_count += 1
+                    # Update consecutive counts using averaged probability
+                    if avg_probability > GAIT_THRESHOLD:
+                        gait_consecutive_count += len(batch_predictions)  # 배치 크기만큼 증가
                         non_gait_consecutive_count = 0
                     else:
-                        non_gait_consecutive_count += 1
+                        non_gait_consecutive_count += len(batch_predictions)  # 배치 크기만큼 증가
                         gait_consecutive_count = 0
                     
                     # State transition logic
-                    update_gait_state_simple(sensor_window[-1], gait_probability)
+                    update_gait_state_accurate(latest_sensor_data, avg_probability, len(batch_predictions))
                     
-                    last_prediction_frame = current_gait_frame
+                    # 마지막 처리된 프레임 업데이트
+                    last_prediction_frame = frame_numbers[-1]
             
-            time.sleep(GAIT_DETECTION_INTERVAL)  # 30Hz 보행 감지 주기
+            time.sleep(GAIT_DETECTION_INTERVAL)  # 정확도 우선 보행 감지 주기
             
         except Exception as e:
             print(f"❌ Gait detection error: {e}")
             time.sleep(0.1)
+
+def update_gait_state_accurate(latest_sensor_data, avg_probability, batch_size):
+    """정확도 향상을 위한 배치 기반 보행 상태 업데이트"""
+    global gait_state, current_gait_data, current_gait_start_time
+    
+    if gait_state == "non-gait":
+        # Gait 시작 조건: 배치 평균 확률 기반으로 더 안정적인 판단
+        adjusted_threshold_frames = GAIT_TRANSITION_FRAMES // batch_size  # 배치 크기 고려한 임계값 조정
+        if gait_consecutive_count >= adjusted_threshold_frames:
+            gait_state = "gait"
+            current_gait_start_time = latest_sensor_data['unix_timestamp']
+            current_gait_data = deque()  # 새로운 gait 데이터 시작
+            
+            # Show label-decoded result
+            label_info = ""
+            if gait_label_encoder:
+                try:
+                    predicted_label = gait_label_encoder.inverse_transform([1])[0]  # 1 = gait
+                    label_info = f" -> {predicted_label}"
+                except:
+                    pass
+            
+            print(f"🚶 Gait started at gait_frame {latest_sensor_data['gait_frame']} (avg prob: {avg_probability:.3f}, batch confidence: {gait_consecutive_count}/{adjusted_threshold_frames}){label_info}")
+    
+    elif gait_state == "gait":
+        # 보행 중인 경우 데이터 수집 (배치의 모든 프레임 추가하지 않고 최신 데이터만)
+        current_gait_data.append(latest_sensor_data)
+        
+        # Gait 종료 조건: 배치 평균 확률 기반으로 더 안정적인 판단
+        adjusted_threshold_frames = GAIT_TRANSITION_FRAMES // batch_size  # 배치 크기 고려한 임계값 조정
+        if non_gait_consecutive_count >= adjusted_threshold_frames:
+            # 보행 데이터 저장 체크
+            gait_duration_frames = len(current_gait_data)
+            gait_duration_seconds = gait_duration_frames / GAIT_TARGET_HZ
+            
+            # Show label-decoded result
+            label_info = ""
+            if gait_label_encoder:
+                try:
+                    predicted_label = gait_label_encoder.inverse_transform([0])[0]  # 0 = non-gait
+                    label_info = f" -> {predicted_label}"
+                except:
+                    pass
+            
+            print(f"🛑 Gait ended at gait_frame {latest_sensor_data['gait_frame']} (avg prob: {avg_probability:.3f}, duration: {gait_duration_frames} frames, {gait_duration_seconds:.1f}s){label_info}")
+            
+            if gait_duration_frames >= MIN_GAIT_DURATION_FRAMES:
+                save_gait_data_to_supabase(list(current_gait_data))
+                print(f"✅ Gait data saved ({gait_duration_frames} frames)")
+            else:
+                print(f"⚠️ Gait duration too short: {gait_duration_frames} frames ({gait_duration_seconds:.1f}s < {MIN_GAIT_DURATION_FRAMES/GAIT_TARGET_HZ:.1f}s)")
+            
+            # 상태 리셋
+            gait_state = "non-gait"
+            current_gait_data = deque()
+            current_gait_start_time = None
 
 def update_gait_state_simple(latest_sensor_data, gait_probability):
     """간단하고 효율적인 보행 상태 업데이트 (30Hz 기준)"""
@@ -683,13 +764,15 @@ def main():
     """Main execution function"""
     global is_running
     
-    print("=" * 60)
-    print("🚶 Gait & Fall Detection System (100Hz/30Hz Optimized)")
-    print("=" * 60)
+    print("=" * 70)
+    print("🚶 Gait & Fall Detection System (Optimized for Different Priorities)")
+    print("=" * 70)
     print(f"📊 Sensor collection: {SENSOR_HZ}Hz")
-    print(f"🚶 Gait detection: {GAIT_TARGET_HZ}Hz (downsampled)")
-    print(f"🚨 Fall detection: {SENSOR_HZ}Hz (interval: {FALL_DETECTION_INTERVAL}s)")
-    print("=" * 60)
+    print(f"🚶 Gait detection: {GAIT_TARGET_HZ}Hz (accuracy priority - batch processing)")
+    print(f"   └─ Batch size: {GAIT_BATCH_SIZE}, Stride: {GAIT_STRIDE}, Interval: {GAIT_DETECTION_INTERVAL}s")
+    print(f"🚨 Fall detection: {SENSOR_HZ}Hz (real-time priority)")
+    print(f"   └─ Interval: {FALL_DETECTION_INTERVAL}s ({1/FALL_DETECTION_INTERVAL:.0f}Hz detection)")
+    print("=" * 70)
     
     # Initialize Supabase
     if not init_supabase():
