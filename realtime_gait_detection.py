@@ -118,25 +118,44 @@ class RealTimeGaitDetector:
             
             print(f"✅ TFLite model loaded successfully: {model_path}")
             
-            # Load StandardScaler
-            with open(scaler_path, "rb") as f:
-                self.scaler = pickle.load(f)
-            print(f"✅ StandardScaler loaded successfully: {scaler_path}")
+            # Try to load StandardScaler
+            try:
+                with open(scaler_path, "rb") as f:
+                    self.scaler = pickle.load(f)
+                print(f"✅ StandardScaler loaded successfully: {scaler_path}")
+                
+                # Check scaler properties
+                if hasattr(self.scaler, 'mean_') and hasattr(self.scaler, 'scale_'):
+                    print(f"🔍 Scaler mean: {self.scaler.mean_}")
+                    print(f"🔍 Scaler scale: {self.scaler.scale_}")
+                else:
+                    print("⚠️ Scaler doesn't have expected attributes")
+                    
+            except Exception as e:
+                print(f"⚠️ Failed to load StandardScaler: {e}")
+                print("💡 Will proceed without scaling")
+                self.scaler = None
             
             # Load label encoder
             with open(label_encoder_path, "rb") as f:
                 self.label_encoder = pickle.load(f)
             print(f"✅ Label encoder loaded successfully: {label_encoder_path}")
             
-            # Load optimal thresholds
-            with open(thresholds_path, "r") as f:
-                thresholds = json.load(f)
-            
-            # Calculate threshold average
-            threshold_values = list(thresholds.values())
-            self.optimal_threshold = np.mean(threshold_values)
-            print(f"✅ Optimal thresholds loaded successfully: {self.optimal_threshold:.3f}")
-            print(f"📋 Fold-wise thresholds: {thresholds}")
+            # Try to load optimal thresholds, but use 0.5 as fallback (per README.md)
+            try:
+                with open(thresholds_path, "r") as f:
+                    thresholds = json.load(f)
+                
+                # Calculate threshold average
+                threshold_values = list(thresholds.values())
+                self.optimal_threshold = np.mean(threshold_values)
+                print(f"✅ Optimal thresholds loaded successfully: {self.optimal_threshold:.3f}")
+                print(f"📋 Fold-wise thresholds: {thresholds}")
+                
+            except Exception as e:
+                print(f"⚠️ Failed to load thresholds: {e}")
+                print("💡 Using default threshold from README.md: 0.5")
+                self.optimal_threshold = 0.24
             
         except Exception as e:
             print(f"❌ Failed to load model/preprocessing objects: {e}")
@@ -170,20 +189,34 @@ class RealTimeGaitDetector:
         return accel + gyro  # Return 6 features: [accel_x, accel_y, accel_z, gyro_x, gyro_y, gyro_z]
     
     def preprocess_data(self, window_data):
-        """Data preprocessing (refer to README.md)"""
-        # Convert to numpy array (1, 60, 6)
-        X = np.array(window_data).reshape(1, self.window_size, self.n_features)
+        """Data preprocessing following README.md guide exactly"""
+        # Convert to numpy array (n_samples, 60, 6) - in our case n_samples=1
+        X_new = np.array(window_data).reshape(1, self.window_size, self.n_features)
         
-        # 3D -> 2D conversion
-        X_2d = X.reshape(-1, self.n_features)
-        
-        # Apply StandardScaler (transform only, no fit!)
-        X_scaled = self.scaler.transform(X_2d)
-        
-        # 2D -> 3D conversion
-        X_scaled = X_scaled.reshape(X.shape)
-        
-        return X_scaled.astype(np.float32)
+        # Check if we should apply scaling
+        if hasattr(self, 'scaler') and self.scaler is not None:
+            try:
+                # Following README.md exactly:
+                n_samples, n_timesteps, n_features = X_new.shape
+                
+                # 3D -> 2D 변환
+                X_2d = X_new.reshape(-1, n_features)
+                
+                # 스케일링 적용 (fit 없이 transform만!)
+                X_scaled = self.scaler.transform(X_2d)
+                
+                # 2D -> 3D 변환
+                X_scaled = X_scaled.reshape(X_new.shape)
+                
+                return X_scaled.astype(np.float32)
+                
+            except Exception as e:
+                print(f"⚠️ Scaling failed: {e}")
+                print("💡 Using raw data without scaling")
+                return X_new.astype(np.float32)
+        else:
+            print("⚠️ No scaler available, using raw data")
+            return X_new.astype(np.float32)
     
     def predict_tflite(self, X_preprocessed):
         """Predict using TFLite model"""
@@ -230,8 +263,18 @@ class RealTimeGaitDetector:
             accel_x, accel_y, accel_z = current_sample[0], current_sample[1], current_sample[2]
             gyro_x, gyro_y, gyro_z = current_sample[3], current_sample[4], current_sample[5]
             
+            # Show some preprocessing debug info
+            window_array = np.array(window_data)
+            raw_mean = np.mean(window_array, axis=0)
+            raw_std = np.std(window_array, axis=0)
+            
             # Preprocessing
             X_preprocessed = self.preprocess_data(window_data)
+            
+            # Show preprocessed data statistics
+            X_flat = X_preprocessed.reshape(-1, self.n_features)
+            scaled_mean = np.mean(X_flat, axis=0)
+            scaled_std = np.std(X_flat, axis=0)
             
             # Prediction
             y_prob = self.predict_tflite(X_preprocessed)
@@ -252,10 +295,25 @@ class RealTimeGaitDetector:
             print(f"    📊 Accel: X={accel_x:+7.3f} Y={accel_y:+7.3f} Z={accel_z:+7.3f} m/s²")
             print(f"    🔄 Gyro:  X={gyro_x:+7.3f} Y={gyro_y:+7.3f} Z={gyro_z:+7.3f} °/s")
             print(f"    🎯 Raw probability: {y_prob[0][0]:.6f}")
+            
+            # Debug preprocessing data
+            print(f"    🔍 Raw data mean: Acc({raw_mean[0]:+5.2f},{raw_mean[1]:+5.2f},{raw_mean[2]:+5.2f}) "
+                  f"Gyro({raw_mean[3]:+5.2f},{raw_mean[4]:+5.2f},{raw_mean[5]:+5.2f})")
+            print(f"    🔍 Scaled data mean: Acc({scaled_mean[0]:+5.2f},{scaled_mean[1]:+5.2f},{scaled_mean[2]:+5.2f}) "
+                  f"Gyro({scaled_mean[3]:+5.2f},{scaled_mean[4]:+5.2f},{scaled_mean[5]:+5.2f})")
+            print(f"    🔍 Scaled data std: Acc({scaled_std[0]:+5.2f},{scaled_std[1]:+5.2f},{scaled_std[2]:+5.2f}) "
+                  f"Gyro({scaled_std[3]:+5.2f},{scaled_std[4]:+5.2f},{scaled_std[5]:+5.2f})")
+            
+            # Check if scaled data looks normal (should be roughly mean=0, std=1 for each feature)
+            if np.any(np.abs(scaled_mean) > 5) or np.any(scaled_std > 10):
+                print(f"    ⚠️  Scaling might be problematic - values seem too extreme")
+            
             print()  # Add blank line for readability
             
         except Exception as e:
             print(f"❌ Prediction error: {e}")
+            import traceback
+            traceback.print_exc()
     
     def start_detection(self, show_sensor_details=True):
         """Start real-time gait detection"""

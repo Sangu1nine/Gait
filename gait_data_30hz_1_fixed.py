@@ -49,7 +49,7 @@ GAIT_WINDOW_SIZE = 60  # Window size for gait detection model
 FALL_WINDOW_SIZE = 150  # Window size for fall detection model
 SENSOR_HZ = 100  # 센서 데이터 수집 주파수 (100Hz)
 GAIT_TARGET_HZ = 30   # 보행 감지용 다운샘플링 주파수 (30Hz)
-GAIT_THRESHOLD = 0.35  # Gait detection threshold
+GAIT_THRESHOLD = 0.24  # Gait detection threshold
 FALL_THRESHOLD = 0.5  # Fall detection threshold
 
 # State transition parameters
